@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Next.js
 
 A modern Next.js 15 application built with TypeScript and Tailwind CSS.
@@ -89,3 +90,8 @@ You can check out the [Next.js GitHub repository](https://github.com/vercel/next
 - Styled with Tailwind CSS
 
 Built with ❤️ on Rocket.new
+=======
+# CutLab Motion Suite
+
+Fusion baseline seeded from the latest Rocket CutLab Studio workspace.
+>>>>>>> 10e90206fd2eb22bf53082043ea130b778f241b9
