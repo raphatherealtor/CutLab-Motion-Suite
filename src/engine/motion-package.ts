@@ -9,8 +9,8 @@
  * No baked pixels. No cloud infrastructure. Local/project/repo friendly.
  */
 
-import type { MotionDocument, MotionOp } from '@/motion/types';
-import { generateMotionId } from '@/motion/utils';
+import type { MotionDocument, MotionOp } from './motion-document';
+import { generateMotionId } from './motion-document-utils';
 
 // ── Package Content Types ─────────────────────────────────────
 

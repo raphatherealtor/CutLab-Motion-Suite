@@ -31,10 +31,8 @@ import type { ProjectData, Sequence, Clip, Asset, Track } from './schema';
 import { serializeProject, deserializeProject } from './persistence';
 import { makeOp } from './operations';
 import { applyOp, applyOps } from './reducer';
-import { createMotionTransaction, makeMotionOp } from '@/motion/transaction';
-import { generateMotionId } from '@/motion/utils';
-import type { MotionDocument } from '@/motion/types';
-import { secondsToMotionTime } from '@/motion/types';
+import { createMotionTransaction, makeOp as makeMotionOp, generateMotionId, secondsToMotionTime } from './motion-document-utils';
+import type { MotionDocument } from './motion-document';
 import E2ETestRunner from '@/app/main-editor/components/E2ETestRunner';
 
 
@@ -129,8 +127,9 @@ function makeMinimalProject(): ProjectData {
     id: assetId,
     name: 'test-video.mp4',
     kind: 'video',
+    sourceRef: 'local:asset-test-video:test-video.mp4',
     runtimeUrl: '',
-    duration: { value: 300, timescale: 30 }, // 10s at 30fps
+    durationFrames: 300, // 10s at 30fps
     width: 1920,
     height: 1080,
     fps: 30,
@@ -306,7 +305,7 @@ async function runRenderPlanTests(runner: TestRunner): Promise<void> {
     p.assets['asset-test-video'].runtimeUrl = 'blob:fake';
     const plan = buildRenderPlan(p, 0);
     assertDefined(plan, 'render plan at frame 0');
-    assert(Array.isArray(plan.layers), 'plan.layers is array');
+    assert(Array.isArray(plan!.layers), 'plan.layers is array');
   });
 
   await runner.run('buildRenderPlan frame beyond sequence returns null', () => {
@@ -677,7 +676,7 @@ async function runPersistenceTests(runner: TestRunner): Promise<void> {
     const p = makeMinimalProject();
     const clip = p.sequences[p.activeSequenceId].clips[0];
     clip.keyframes = [
-      { id: 'kf-1', property: 'opacity', time: { numerator: 15, denominator: 30 }, value: 0.5, easing: 'linear' },
+      { id: 'kf-1', property: 'opacity', time: { value: 15, timescale: 30 }, value: 0.5, easing: 'linear' },
     ];
     const restored = JSON.parse(JSON.stringify(p)) as ProjectData;
     const restoredClip = restored.sequences[restored.activeSequenceId].clips[0];
@@ -709,7 +708,7 @@ async function runMotionWorkflowTests(runner: TestRunner): Promise<void> {
       fps: seq.format.fps,
     });
     assert(ops.length >= 2, 'createMotionClipOps returns at least 2 ops');
-    assert(ops.some(o => o.type === 'motionDocument.upsert'), 'includes motionDocument.upsert op');
+    assert(ops.some(o => o.type === 'motion.document.register'), 'includes motion.document.register op');
     assert(ops.some(o => o.type === 'clip.add'), 'includes clip.add op');
   });
 
@@ -762,11 +761,11 @@ async function runMotionWorkflowTests(runner: TestRunner): Promise<void> {
     const { state } = applyOps(p, addOps);
 
     // Create a motion transaction that updates the doc name
-    const motionOp = makeMotionOp('document.setProps', doc.id, { name: 'Updated Name' });
+    const motionOp = makeMotionOp('motion.setDocumentProp', doc.id, { props: { name: 'Updated Name' } });
     const transaction = createMotionTransaction('Update doc name', [motionOp]);
     const studioOps = motionTransactionToStudioOps(transaction, state);
     assert(studioOps.length > 0, 'motionTransactionToStudioOps produces ops');
-    assert(studioOps.some(o => o.type === 'motionDocument.upsert'), 'includes motionDocument.upsert');
+    assert(studioOps.some(o => o.type === 'motion.document.register'), 'includes motion.document.register');
   });
 
   await runner.run('motion document update reflects in resolveMotionDocument', () => {
@@ -928,8 +927,8 @@ async function runSaveReloadRelinkTests(runner: TestRunner): Promise<void> {
     const seq = p.sequences[p.activeSequenceId];
     const clip = seq.clips[0];
     clip.keyframes = [
-      { id: 'kf-gain-1', property: 'gain', time: { numerator: 15, denominator: 30 }, value: 6, easing: 'linear' },
-      { id: 'kf-gain-2', property: 'gain', time: { numerator: 60, denominator: 30 }, value: -3, easing: 'ease-in-out' },
+      { id: 'kf-gain-1', property: 'gain', time: { value: 15, timescale: 30 }, value: 6, easing: 'linear' },
+      { id: 'kf-gain-2', property: 'gain', time: { value: 60, timescale: 30 }, value: -3, easing: 'ease-in-out' },
     ];
     const json = serializeProject(p);
     const restored = deserializeProject(json);
@@ -994,8 +993,8 @@ async function runGainKeyframeAudioTests(runner: TestRunner): Promise<void> {
     const seq = p.sequences[p.activeSequenceId];
     const clip = seq.clips[0];
     clip.keyframes = [
-      { id: 'kf-1', property: 'gain', time: { numerator: 0, denominator: 30 }, value: 0, easing: 'linear' },
-      { id: 'kf-2', property: 'gain', time: { numerator: 150, denominator: 30 }, value: 6, easing: 'linear' },
+      { id: 'kf-1', property: 'gain', time: { value: 0, timescale: 30 }, value: 0, easing: 'linear' },
+      { id: 'kf-2', property: 'gain', time: { value: 150, timescale: 30 }, value: 6, easing: 'linear' },
     ];
     const result = await mixdownAudio(p, new Map(), 5, 48000, 2);
     assert(!result.isReal, 'deferred when no files (expected)');
@@ -1242,7 +1241,7 @@ async function runFullWorkflowTests(runner: TestRunner): Promise<void> {
       clipId: videoClip!.id,
       props: {
         keyframes: [
-          { id: 'kf-test', property: 'gain', time: { numerator: 30, denominator: 30 }, value: 0, easing: 'linear' },
+          { id: 'kf-test', property: 'gain', time: { value: 30, timescale: 30 }, value: 0, easing: 'linear' },
         ],
       },
     })).state;
@@ -1342,11 +1341,13 @@ function makeMinimalMotionDoc(id?: string, durationSecs = 3): MotionDocument {
     height: 1080,
     objects: {},
     rootObjectIds: [],
+    materials: {},
+    cameras: {},
     signals: {},
     rigs: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
-  } as MotionDocument;
+  };
 }
 
 // ── Thin reducer helper for tests ────────────────────────────

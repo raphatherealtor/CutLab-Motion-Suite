@@ -18,6 +18,7 @@ import {
   type SVGPossibilityKind,
 } from '@/engine/svg-possibilities';
 import { makeOp } from '@/engine/operations';
+import { motionTypesDocToEngineDoc } from '@/engine/motion-bridge';
 import { generateId } from '@/engine/schema';
 import { fromSeconds } from '@/engine/time';
 
@@ -81,19 +82,18 @@ export default function SVGPossibilityPanel() {
     const fps = seq.format.fps;
     const playheadSecs = session.playheadFrame / fps;
 
-    // Store the MotionDocument in project
+    // Store the canonical MotionDocument in project
+    // (SVG possibilities are authored in the legacy motion/types system —
+    // migrate to the canonical engine MotionDocument at import time.)
     const docId = possibility.motionDocument.id;
-    const docJson = JSON.stringify(possibility.motionDocument);
+    const engineDoc = motionTypesDocToEngineDoc(possibility.motionDocument as unknown as Parameters<typeof motionTypesDocToEngineDoc>[0]);
 
     // Create a motion clip on the timeline
     const clipId = generateId();
     const clipDuration = possibility.motionDocument.duration.value / possibility.motionDocument.duration.timescale;
 
     engine.dispatch(
-      makeOp('motionDocument.upsert', {
-        documentId: docId,
-        documentJson: docJson,
-      }),
+      makeOp('motion.document.register', { document: engineDoc }),
       `Import SVG: ${possibility.label}`
     );
 
@@ -109,8 +109,16 @@ export default function SVGPossibilityPanel() {
           duration: fromSeconds(clipDuration, fps),
           sourceIn: fromSeconds(0, fps),
           sourceOut: fromSeconds(clipDuration, fps),
+          transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 },
+          keyframes: [],
+          effects: [],
+          masks: [],
+          gain: 0,
+          fadeIn: fromSeconds(0, 30000),
+          fadeOut: fromSeconds(0, 30000),
           speed: 1,
           reverse: false,
+          freeze: false,
           disabled: false,
           motionDocumentId: docId,
         },

@@ -165,6 +165,7 @@ export default function TranscriptWorkspace() {
         style: {},
         wordTimings: allWords.slice(i, endIdx).map((w) => ({
           wordId: w.id,
+          text: w.text,
           startTime: w.startTime,
           endTime: w.endTime,
           semanticMetadata: {},

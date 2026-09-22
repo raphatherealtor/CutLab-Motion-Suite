@@ -339,7 +339,12 @@ export default function SignalResourcePanel({ clipId }: SignalResourcePanelProps
                   </div>
                   {signalBehaviors.map((beh) => {
                     const sig = doc.signals[beh.signalBinding!];
-                    const liveVal = sig ? evaluateSignalChannel(sig.kind.replace('-', '.'), signalCtx) : 0;
+                    // Canonical signals carry name/id (no legacy `kind` channel field) —
+                    // derive the channel from the signal name, e.g. "Audio Beat" -> "audio.beat".
+                    const sigChannel = sig
+                      ? (sig.name || sig.id).toLowerCase().replace(/[\s_]+/g, '-').replace('-', '.')
+                      : '';
+                    const liveVal = sigChannel ? evaluateSignalChannel(sigChannel, signalCtx) : 0;
 
                     return (
                       <div key={beh.id} style={{ padding: '6px 10px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '6px' }}>

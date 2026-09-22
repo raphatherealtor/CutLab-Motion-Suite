@@ -9,10 +9,8 @@
 import React, { useState, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
 import { resolveClipMotionDocument, motionTransactionToStudioOps } from '@/engine/motion-bridge';
-import type { MotionObject, MotionBehavior, MotionSignal } from '@/motion/types';
-import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
-import { secondsToMotionTime, motionTimeToSeconds } from '@/motion/types';
-import { generateMotionId } from '@/motion/utils';
+import type { MotionObject, MotionBehavior, MotionSignal } from '@/engine/motion-document';
+import { makeOp as makeMotionOp, createMotionTransaction, generateMotionId, secondsToMotionTime, motionTimeToSeconds } from '@/engine/motion-document-utils';
 
 // ── Signal Sources ────────────────────────────────────────────
 
@@ -119,7 +117,7 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
   // Collect all active signal bindings across all objects
   const allBindings: Array<{ obj: MotionObject; behavior: MotionBehavior; signal?: MotionSignal }> = [];
   for (const obj of rootObjs) {
-    for (const beh of obj.behaviors) {
+    for (const beh of obj.behaviors ?? []) {
       if (beh.signalBinding) {
         allBindings.push({ obj, behavior: beh, signal: doc.signals[beh.signalBinding] });
       }
@@ -130,28 +128,32 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
     const targetObj = rootObjs[0];
     if (!targetObj) return;
 
-    const existingSig = Object.values(doc.signals).find((s) => s.kind === starter.source);
+    const existingSig = Object.values(doc.signals).find((s) => s.name === starter.source);
     const sigId = existingSig?.id ?? generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
     if (!existingSig) {
       const signal: MotionSignal = {
         id: sigId,
-        kind: starter.source as MotionSignal['kind'],
-        name: SIGNAL_SOURCES.find((s) => s.kind === starter.source)?.label ?? starter.source,
+        name: starter.source,
+        type: 'number',
+        defaultValue: 0,
       };
       ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal }));
     }
 
     // Handle camera pulse specially
     if (starter.id === 'camera-pulse') {
-      if (!doc.camera) {
+      const activeCam = doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined;
+      if (!activeCam) {
+        const camId = generateMotionId('cam');
         const cam = {
-          id: generateMotionId('cam'), name: 'Camera',
-          transform: { position: { x: 0, y: 0, z: -800 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 },
-          keyframes: [], fov: 60, near: 1, far: 10000,
+          id: camId, name: 'Camera',
+          transform: { x: 0, y: 0, z: -800, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 },
+          keyframes: [], fov: 60, near: 1, far: 10000, active: true,
         };
         ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: cam }));
+        ops.push(makeMotionOp('motion.camera.setActive', doc.id, { cameraId: camId }));
       }
     }
 
@@ -174,15 +176,16 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
     const targetObj = selectedObjectId ? doc.objects[selectedObjectId] : rootObjs[0];
     if (!targetObj) return;
 
-    const existingSig = Object.values(doc.signals).find((s) => s.kind === selectedSource);
+    const existingSig = Object.values(doc.signals).find((s) => s.name === selectedSource);
     const sigId = existingSig?.id ?? generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
     if (!existingSig) {
       const signal: MotionSignal = {
         id: sigId,
-        kind: selectedSource as MotionSignal['kind'],
-        name: SIGNAL_SOURCES.find((s) => s.kind === selectedSource)?.label ?? selectedSource,
+        name: selectedSource,
+        type: 'number',
+        defaultValue: 0,
       };
       ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal }));
     }
@@ -327,7 +330,7 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
                   {allBindings.length} active binding{allBindings.length !== 1 ? 's' : ''}. All are visible and removable.
                 </div>
                 {allBindings.map(({ obj, behavior, signal }) => {
-                  const sourceInfo = SIGNAL_SOURCES.find((s) => s.kind === signal?.kind);
+                  const sourceInfo = SIGNAL_SOURCES.find((s) => s.kind === signal?.name);
                   const targetProp = behavior.params.property as string;
                   return (
                     <div
@@ -337,7 +340,7 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
                         <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: sourceInfo?.color ?? '#22D3EE', flexShrink: 0 }} />
                         <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--color-fg)', flex: 1 }}>
-                          {sourceInfo?.label ?? signal?.kind ?? 'Unknown'} → {targetProp}
+                          {sourceInfo?.label ?? signal?.name ?? 'Unknown'} → {targetProp}
                         </span>
                         <button
                           onClick={() => removeBinding(obj.id, behavior.id)}

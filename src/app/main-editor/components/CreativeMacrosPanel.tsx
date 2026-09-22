@@ -10,10 +10,8 @@
 import React, { useState, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
 import { resolveClipMotionDocument, motionTransactionToStudioOps } from '@/engine/motion-bridge';
-import type { MotionBehavior, MotionMaterial } from '@/motion/types';
-import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
-import { secondsToMotionTime, motionTimeToSeconds, hexToMotionColor } from '@/motion/types';
-import { generateMotionId } from '@/motion/utils';
+import type { MotionBehavior, MotionMaterial } from '@/engine/motion-document';
+import { makeOp as makeMotionOp, createMotionTransaction, generateMotionId, secondsToMotionTime, motionTimeToSeconds } from '@/engine/motion-document-utils';
 
 // ── Macro Definitions ─────────────────────────────────────────
 
@@ -128,7 +126,7 @@ export default function CreativeMacrosPanel({ clipId }: CreativeMacrosPanelProps
           const obj = rootObjs[i];
           const layerDepth = (i - Math.floor(rootObjs.length / 2)) * depthScale;
           ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: layerDepth } }));
-          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: layerDepth * 80 } } }));
+          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: layerDepth * 80 } }));
         }
         // Also add parallax behaviors proportional to depth
         if (value > 4) {
@@ -215,13 +213,14 @@ export default function CreativeMacrosPanel({ clipId }: CreativeMacrosPanelProps
       case 'spatial': {
         // Expand: camera movement, depth theater
         const spatialScale = value / 4;
-        if (doc.camera) {
+        const spatialCam = doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined;
+        if (spatialCam) {
           const newCam = {
-            ...doc.camera,
+            ...spatialCam,
             keyframes: [
-              ...doc.camera.keyframes.filter((k) => k.property !== 'position.z'),
-              { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: -800 - spatialScale * 200, easing: 'ease-in-out' as const },
-              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: -800 + spatialScale * 100, easing: 'ease-in-out' as const },
+              ...spatialCam.keyframes.filter((k) => k.property !== 'z'),
+              { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: -800 - spatialScale * 200, easing: 'ease-in-out' as const },
+              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: -800 + spatialScale * 100, easing: 'ease-in-out' as const },
             ],
           };
           ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: newCam }));
@@ -242,16 +241,19 @@ export default function CreativeMacrosPanel({ clipId }: CreativeMacrosPanelProps
 
       case 'texture': {
         // Expand: material richness — calibrated, not extreme
-        const textureTypes: MotionMaterial['type'][] = ['flat', 'flat', 'flat', 'flat', 'glass', 'glass', 'metal', 'procedural', 'procedural', 'neon', 'neon'];
-        const matType = textureTypes[Math.min(10, Math.round(value))] ?? 'flat';
+        const textureTypes: MotionMaterial['type'][] = ['solid', 'solid', 'solid', 'solid', 'glass', 'glass', 'metal', 'solid', 'solid', 'neon', 'neon'];
+        const matType = textureTypes[Math.min(10, Math.round(value))] ?? 'solid';
         for (const obj of rootObjs) {
           if (obj.kind === 'text') {
+            const existingMat: MotionMaterial | undefined = obj.materialId ? doc.materials[obj.materialId] : undefined;
             const mat: MotionMaterial = {
               id: generateMotionId('mat'),
+              name: `Texture ${matType}`,
               type: matType,
-              color: obj.material?.color ?? hexToMotionColor('#ffffff'),
+              color: existingMat?.color ?? '#ffffff',
               opacity: 1,
-              ...(matType === 'procedural' ? { params: { style: value > 7 ? 'chrome' : 'paper' } } : {}),
+              ...(matType === 'solid' ? { params: { style: value > 7 ? 'chrome' : 'paper' } } : {}),
+              ...(matType === 'metal' ? { params: { style: 'chrome' } } : {}),
               ...(matType === 'neon' ? { params: { glowRadius: 15 + value * 2 } } : {}),
             };
             ops.push(makeMotionOp('motion.setMaterial', doc.id, { objectId: obj.id, material: mat }));
@@ -264,27 +266,31 @@ export default function CreativeMacrosPanel({ clipId }: CreativeMacrosPanelProps
         // Expand: camera keyframes for push/pull — calibrated
         const camEnergy = value / 3;
         const pushAmount = camEnergy * 60; // max ~200px at value=10
-        if (!doc.camera) {
+        const activeCam = doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined;
+        if (!activeCam) {
+          const camId = generateMotionId('cam');
           const newCam = {
-            id: generateMotionId('cam'), name: 'Camera',
-            transform: { position: { x: 0, y: 0, z: -800 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 },
+            id: camId, name: 'Camera',
+            transform: { x: 0, y: 0, z: -800, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 },
             keyframes: [
-              { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: -800, easing: 'ease-in-out' as const },
-              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs * 0.5), property: 'position.z', value: -800 + pushAmount, easing: 'ease-in-out' as const },
-              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: -800 + pushAmount * 0.5, easing: 'ease-in-out' as const },
+              { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: -800, easing: 'ease-in-out' as const },
+              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs * 0.5), property: 'z', value: -800 + pushAmount, easing: 'ease-in-out' as const },
+              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: -800 + pushAmount * 0.5, easing: 'ease-in-out' as const },
             ],
             fov: Math.max(30, 60 - camEnergy * 3),
             near: 1, far: 10000,
+            active: true,
           };
           ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: newCam }));
+          ops.push(makeMotionOp('motion.camera.setActive', doc.id, { cameraId: camId }));
         } else {
           const updatedCam = {
-            ...doc.camera,
+            ...activeCam,
             fov: Math.max(30, 60 - camEnergy * 3),
             keyframes: [
-              ...doc.camera.keyframes.filter((k) => k.property !== 'position.z'),
-              { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: -800, easing: 'ease-in-out' as const },
-              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: -800 + pushAmount, easing: 'ease-in-out' as const },
+              ...activeCam.keyframes.filter((k) => k.property !== 'z'),
+              { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: -800, easing: 'ease-in-out' as const },
+              { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: -800 + pushAmount, easing: 'ease-in-out' as const },
             ],
           };
           ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: updatedCam }));
@@ -304,7 +310,7 @@ export default function CreativeMacrosPanel({ clipId }: CreativeMacrosPanelProps
               easing: 'ease-in-out',
             };
             // Only add if not already present
-            const existingWrap = obj.behaviors.find((b) => b.params.property === 'rotation.y');
+            const existingWrap = (obj.behaviors ?? []).find((b) => b.params.property === 'rotation.y');
             if (!existingWrap) {
               ops.push(makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: wrapBeh }));
             } else {

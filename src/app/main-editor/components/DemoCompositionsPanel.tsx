@@ -9,7 +9,7 @@
 import React, { useState, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
 import { DEMO_COMPOSITIONS } from '@/engine/demo-compositions';
-import { createMotionClipOps } from '@/engine/motion-bridge';
+import { createMotionClipOps, motionTypesDocToEngineDoc } from '@/engine/motion-bridge';
 
 
 const SYSTEM_COLORS: Record<string, string> = {
@@ -53,7 +53,9 @@ export default function DemoCompositionsPanel() {
     setPlacingId(demoId);
 
     try {
-      const motionDoc = demo.create();
+      // Demo compositions are authored in the legacy motion/types system —
+      // migrate to the canonical engine MotionDocument at placement time.
+      const motionDoc = motionTypesDocToEngineDoc(demo.create() as unknown as Parameters<typeof motionTypesDocToEngineDoc>[0]);
       const playheadSecs = session.playheadFrame / fps;
       const motionTrack = activeSequence.tracks.find((t) => t.kind === 'motion') ??
         activeSequence.tracks.find((t) => t.kind === 'graphic') ??

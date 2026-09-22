@@ -9,6 +9,7 @@
 
 import React, { useState, useMemo, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
+import { makeOp } from '@/engine/operations';
 import { deriveSceneScript, getActiveSceneRegion, getChoreographyDirective, type SceneRegion, type SceneRegionKind, type EnergyLevel } from '@/engine/scene-script';
 import { toSeconds } from '@/engine/time';
 
@@ -105,7 +106,7 @@ export default function SceneScriptPanel() {
 
   const seekToRegion = useCallback((region: SceneRegion) => {
     const frame = Math.round(toSeconds(region.start) * fps);
-    dispatch({ type: 'SET_PLAYHEAD', payload: { frame } });
+    dispatch(makeOp('playhead.set', { frame }), 'Seek to region');
   }, [dispatch, fps]);
 
   if (!sceneScript || !activeSequence) {

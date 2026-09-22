@@ -4,15 +4,18 @@
  * CutLab Motion Inspector — Extended
  * Integrates: Objects, Properties, Text, Behaviors, Signals, Curves, Dope Sheet,
  * Camera, Macros, Spatial/2.5D, Signal Binding, Diagnostics
+ *
+ * Typed against the CANONICAL engine MotionDocument (ProjectData.motionDocuments).
+ * All edits flow: MotionOp[] → MotionTransaction → motionTransactionToStudioOps → one history entry.
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { useEngine } from '@/engine/store';
-import { resolveClipMotionDocument, motionTransactionToStudioOps, studioTimeToMotionTime, evaluateMotionClip } from '@/engine/motion-bridge';
-import type { MotionDocument, MotionObject, MotionBehavior, MotionMaterial, MotionKeyframe, FrameState } from '@/motion/types';
-import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
-import { motionColorToHex, hexToMotionColor, motionTimeToSeconds, secondsToMotionTime } from '@/motion/types';
-import { generateMotionId } from '@/motion/utils';
+import { resolveClipMotionDocument, motionTransactionToStudioOps, studioTimeToMotionTime } from '@/engine/motion-bridge';
+import type { MotionDocument, MotionObject, MotionBehavior, MotionMaterial, MotionKeyframe } from '@/engine/motion-document';
+import { DEFAULT_MOTION_TRANSFORM } from '@/engine/motion-document';
+import { type FrameState, evaluateMotionClip } from '@/engine/motion-document-utils';
+import { makeOp as makeMotionOp, createMotionTransaction, generateMotionId, motionTimeToSeconds, secondsToMotionTime } from '@/engine/motion-document-utils';
 import TextMotionPanel from './TextMotionPanel';
 import CreativeMacrosPanel from './CreativeMacrosPanel';
 import SignalBindingPanel from './SignalBindingPanel';
@@ -211,18 +214,24 @@ interface ObjectsPanelProps {
 
 function ObjectsPanel({ doc, selectedObjectId, onSelect, onApplyOps }: ObjectsPanelProps) {
   const kindIcon: Record<string, string> = {
-    text: 'T', shape: '◻', image: '🖼', video: '▶', group: '⊞', camera: '📷',
-    light: '💡', particle: '✦', path: '⌇', mask: '⬡', null: '○', svg: 'S',
+    text: 'T', 'text-segment': 'T', shape: '◻', image: '🖼', video: '▶', group: '⊞', camera: '📷',
+    light: '💡', particle: '✦', path: '⌇', mask: '⬡', 'null-object': '○', null: '○', svg: 'S',
   };
 
   const addTextObject = () => {
     const objId = generateMotionId('obj');
     const obj: MotionObject = {
       id: objId, kind: 'text', name: 'New Text', depth: 0,
-      transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 },
+      transform: { ...DEFAULT_MOTION_TRANSFORM },
       keyframes: [], behaviors: [], masks: [],
-      textSegments: [{ id: generateMotionId('seg'), text: 'New Text', fontSize: 48, fontWeight: 700, textAlign: 'center' }],
-      visible: true, locked: false,
+      blendMode: 'normal', visible: true, solo: false, locked: false,
+      text: 'New Text',
+      textAlign: 'center',
+      textSegments: [{
+        id: generateMotionId('seg'), text: 'New Text',
+        startTime: { value: 0, timescale: 30000 }, endTime: { value: 30000, timescale: 30000 },
+        fontSize: 48, fontWeight: 700,
+      }],
     };
     onApplyOps([makeMotionOp('motion.addObject', doc.id, { object: obj, addToRoot: true })], 'Add text object');
     onSelect(objId);
@@ -232,12 +241,18 @@ function ObjectsPanel({ doc, selectedObjectId, onSelect, onApplyOps }: ObjectsPa
     const objId = generateMotionId('obj');
     const obj: MotionObject = {
       id: objId, kind: 'shape', name: 'New Shape', depth: 0,
-      transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 },
+      transform: { ...DEFAULT_MOTION_TRANSFORM },
       keyframes: [], behaviors: [], masks: [],
-      material: { id: generateMotionId('mat'), type: 'flat', color: hexToMotionColor('#3B82FF'), opacity: 1 },
-      visible: true, locked: false,
+      blendMode: 'normal', visible: true, solo: false, locked: false,
+      materialId: undefined,
+      shapeType: 'rectangle',
+      shapeFillColor: '#3B82FF',
     };
-    onApplyOps([makeMotionOp('motion.addObject', doc.id, { object: obj, addToRoot: true })], 'Add shape object');
+    const matId = generateMotionId('mat');
+    onApplyOps([
+      makeMotionOp('motion.addObject', doc.id, { object: obj, addToRoot: true }),
+      makeMotionOp('motion.setMaterial', doc.id, { objectId: objId, material: { id: matId, name: 'Shape Fill', type: 'solid', color: '#3B82FF' } }),
+    ], 'Add shape object');
     onSelect(objId);
   };
 
@@ -286,30 +301,31 @@ interface PropertiesPanelProps {
 }
 
 function PropertiesPanel({ doc, obj, onApplyOps }: PropertiesPanelProps) {
-  const [localX, setLocalX] = useState(obj.transform.position.x);
-  const [localY, setLocalY] = useState(obj.transform.position.y);
-  const [localZ, setLocalZ] = useState(obj.transform.position.z);
-  const [localRotZ, setLocalRotZ] = useState(obj.transform.rotation.z);
-  const [localScaleX, setLocalScaleX] = useState(obj.transform.scale.x);
-  const [localScaleY, setLocalScaleY] = useState(obj.transform.scale.y);
+  const objMaterial: MotionMaterial | undefined = obj.materialId ? doc.materials[obj.materialId] : undefined;
+  const [localX, setLocalX] = useState(obj.transform.x);
+  const [localY, setLocalY] = useState(obj.transform.y);
+  const [localZ, setLocalZ] = useState(obj.transform.z);
+  const [localRotZ, setLocalRotZ] = useState(obj.transform.rotationZ);
+  const [localScaleX, setLocalScaleX] = useState(obj.transform.scaleX);
+  const [localScaleY, setLocalScaleY] = useState(obj.transform.scaleY);
   const [localOpacity, setLocalOpacity] = useState(obj.transform.opacity * 100);
   const [localDepth, setLocalDepth] = useState(obj.depth);
   const [localText, setLocalText] = useState(obj.textSegments?.[0]?.text ?? '');
   const [localFontSize, setLocalFontSize] = useState(obj.textSegments?.[0]?.fontSize ?? 48);
-  const [localColor, setLocalColor] = useState(obj.material?.color ? motionColorToHex(obj.material.color) : '#ffffff');
+  const [localColor, setLocalColor] = useState(objMaterial?.color ?? '#ffffff');
 
   useEffect(() => {
-    setLocalX(obj.transform.position.x);
-    setLocalY(obj.transform.position.y);
-    setLocalZ(obj.transform.position.z);
-    setLocalRotZ(obj.transform.rotation.z);
-    setLocalScaleX(obj.transform.scale.x);
-    setLocalScaleY(obj.transform.scale.y);
+    setLocalX(obj.transform.x);
+    setLocalY(obj.transform.y);
+    setLocalZ(obj.transform.z);
+    setLocalRotZ(obj.transform.rotationZ);
+    setLocalScaleX(obj.transform.scaleX);
+    setLocalScaleY(obj.transform.scaleY);
     setLocalOpacity(obj.transform.opacity * 100);
     setLocalDepth(obj.depth);
     setLocalText(obj.textSegments?.[0]?.text ?? '');
     setLocalFontSize(obj.textSegments?.[0]?.fontSize ?? 48);
-    setLocalColor(obj.material?.color ? motionColorToHex(obj.material.color) : '#ffffff');
+    setLocalColor(objMaterial?.color ?? '#ffffff');
   }, [obj.id]);
 
   const commitTransform = (patch: Partial<MotionObject['transform']>) => {
@@ -329,7 +345,9 @@ function PropertiesPanel({ doc, obj, onApplyOps }: PropertiesPanelProps) {
   };
 
   const commitColor = (hex: string) => {
-    const material: MotionMaterial = { ...(obj.material ?? { id: generateMotionId('mat'), type: 'flat' as const, opacity: 1 }), color: hexToMotionColor(hex) };
+    const material: MotionMaterial = objMaterial
+      ? { ...objMaterial, color: hex }
+      : { id: generateMotionId('mat'), name: 'Fill', type: 'solid', color: hex };
     onApplyOps([makeMotionOp('motion.setMaterial', doc.id, { objectId: obj.id, material })], 'Set color');
   };
 
@@ -356,12 +374,12 @@ function PropertiesPanel({ doc, obj, onApplyOps }: PropertiesPanelProps) {
   return (
     <div style={{ padding: '8px' }}>
       <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--color-muted)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Transform</div>
-      {row('X', numInput(localX, setLocalX, (v) => { setLocalX(v); commitTransform({ position: { ...obj.transform.position, x: v } }); }))}
-      {row('Y', numInput(localY, setLocalY, (v) => { setLocalY(v); commitTransform({ position: { ...obj.transform.position, y: v } }); }))}
-      {row('Z (depth)', numInput(localZ, setLocalZ, (v) => { setLocalZ(v); commitTransform({ position: { ...obj.transform.position, z: v } }); }))}
-      {row('Rot Z', numInput(localRotZ, setLocalRotZ, (v) => { setLocalRotZ(v); commitTransform({ rotation: { ...obj.transform.rotation, z: v } }); }))}
-      {row('Scale X', numInput(localScaleX, setLocalScaleX, (v) => { setLocalScaleX(v); commitTransform({ scale: { ...obj.transform.scale, x: v } }); }, 0.01))}
-      {row('Scale Y', numInput(localScaleY, setLocalScaleY, (v) => { setLocalScaleY(v); commitTransform({ scale: { ...obj.transform.scale, y: v } }); }, 0.01))}
+      {row('X', numInput(localX, setLocalX, (v) => { setLocalX(v); commitTransform({ x: v }); }))}
+      {row('Y', numInput(localY, setLocalY, (v) => { setLocalY(v); commitTransform({ y: v }); }))}
+      {row('Z (depth)', numInput(localZ, setLocalZ, (v) => { setLocalZ(v); commitTransform({ z: v }); }))}
+      {row('Rot Z', numInput(localRotZ, setLocalRotZ, (v) => { setLocalRotZ(v); commitTransform({ rotationZ: v }); }))}
+      {row('Scale X', numInput(localScaleX, setLocalScaleX, (v) => { setLocalScaleX(v); commitTransform({ scaleX: v }); }, 0.01))}
+      {row('Scale Y', numInput(localScaleY, setLocalScaleY, (v) => { setLocalScaleY(v); commitTransform({ scaleY: v }); }, 0.01))}
       {row('Opacity', (
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <input type="range" min={0} max={100} value={localOpacity} onChange={(e) => setLocalOpacity(parseFloat(e.target.value))} onMouseUp={() => commitTransform({ opacity: localOpacity / 100 })} className="range-slider" style={{ flex: 1 }} aria-label="Opacity" />
@@ -430,7 +448,7 @@ function BehaviorsPanel({ doc, obj, onApplyOps }: BehaviorsPanelProps) {
           ))}
         </div>
       </div>
-      {obj.behaviors.length === 0 ? (
+      {(obj.behaviors ?? []).length === 0 ? (
         <div style={{ padding: '12px', textAlign: 'center', fontSize: '11px', color: 'var(--color-subtle)' }}>No behaviors</div>
       ) : (
         obj.behaviors.map((beh) => (
@@ -461,8 +479,9 @@ interface CurvesPanelProps {
 
 function CurvesPanel({ doc, obj, localTimeSecs, onApplyOps }: CurvesPanelProps) {
   const docDurSecs = motionTimeToSeconds(doc.duration);
-  const properties = ['position.x', 'position.y', 'position.z', 'rotation.z', 'scale.x', 'scale.y', 'opacity'];
-  const [selectedProp, setSelectedProp] = useState('position.x');
+  // Canonical property names — match evaluateMotionTransform in engine/motion-document.ts
+  const properties = ['x', 'y', 'z', 'rotationZ', 'scaleX', 'scaleY', 'opacity'];
+  const [selectedProp, setSelectedProp] = useState('x');
   const kfsForProp = obj.keyframes.filter((k) => k.property === selectedProp);
 
   const addKeyframe = (prop: string) => {
@@ -513,12 +532,12 @@ function CurvesPanel({ doc, obj, localTimeSecs, onApplyOps }: CurvesPanelProps) 
 
 function getPropertyValue(obj: MotionObject, prop: string): number {
   switch (prop) {
-    case 'position.x': return obj.transform.position.x;
-    case 'position.y': return obj.transform.position.y;
-    case 'position.z': return obj.transform.position.z;
-    case 'rotation.z': return obj.transform.rotation.z;
-    case 'scale.x': return obj.transform.scale.x;
-    case 'scale.y': return obj.transform.scale.y;
+    case 'x': return obj.transform.x;
+    case 'y': return obj.transform.y;
+    case 'z': return obj.transform.z;
+    case 'rotationZ': return obj.transform.rotationZ;
+    case 'scaleX': return obj.transform.scaleX;
+    case 'scaleY': return obj.transform.scaleY;
     case 'opacity': return obj.transform.opacity;
     default: return 0;
   }
@@ -546,10 +565,10 @@ function DopeSheetPanel({ doc, selectedObjectId, onSelect, localTimeSecs }: Dope
           <div key={objId} style={{ marginBottom: '4px' }}>
             <div onClick={() => onSelect(objId)} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 4px', background: isSelected ? 'rgba(139,92,246,0.1)' : 'transparent', borderRadius: '3px', cursor: 'pointer', marginBottom: '2px' }}>
               <span style={{ fontSize: '10px', color: 'var(--color-fg)', flex: 1 }}>{obj.name}</span>
-              <span style={{ fontSize: '9px', color: 'var(--color-subtle)' }}>{obj.keyframes.length}kf · {obj.behaviors.length}beh</span>
+              <span style={{ fontSize: '9px', color: 'var(--color-subtle)' }}>{obj.keyframes.length}kf · {(obj.behaviors ?? []).length}beh</span>
             </div>
             <div style={{ height: '18px', background: 'var(--color-well)', border: '1px solid var(--color-border)', borderRadius: '3px', position: 'relative', overflow: 'hidden' }}>
-              {obj.behaviors.map((beh) => {
+              {(obj.behaviors ?? []).map((beh) => {
                 const start = motionTimeToSeconds(beh.startTime) / docDurSecs * 100;
                 const width = motionTimeToSeconds(beh.duration) / docDurSecs * 100;
                 return <div key={beh.id} style={{ position: 'absolute', top: '2px', bottom: '2px', left: `${start}%`, width: `${width}%`, background: beh.signalBinding ? 'rgba(34,211,238,0.3)' : 'rgba(139,92,246,0.3)', borderRadius: '2px', minWidth: '2px' }} title={beh.type} />;
@@ -575,10 +594,17 @@ interface CameraPanelProps {
 }
 
 function CameraPanel({ doc, onApplyOps }: CameraPanelProps) {
-  const cam = doc.camera;
+  const cam = (doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined) ?? Object.values(doc.cameras)[0];
   const addCamera = () => {
-    const camera = { id: generateMotionId('cam'), name: 'Camera', transform: { position: { x: 0, y: 0, z: -1000 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 }, keyframes: [], fov: 60, near: 1, far: 10000 };
-    onApplyOps([makeMotionOp('motion.setCamera', doc.id, { camera })], 'Add camera');
+    const camera = {
+      id: generateMotionId('cam'), name: 'Camera',
+      transform: { ...DEFAULT_MOTION_TRANSFORM, z: -1000 },
+      keyframes: [], fov: 60, near: 1, far: 10000, active: true,
+    };
+    onApplyOps([
+      makeMotionOp('motion.setCamera', doc.id, { camera }),
+      makeMotionOp('motion.camera.setActive', doc.id, { cameraId: camera.id }),
+    ], 'Add camera');
   };
   if (!cam) {
     return (
@@ -598,7 +624,7 @@ function CameraPanel({ doc, onApplyOps }: CameraPanelProps) {
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '5px' }}>
         <span style={{ fontSize: '10px', color: 'var(--color-subtle)', width: '52px' }}>Z Pos</span>
-        <input type="number" value={cam.transform.position.z} step={10} onChange={(e) => { const newCam = { ...cam, transform: { ...cam.transform, position: { ...cam.transform.position, z: parseFloat(e.target.value) || -1000 } } }; onApplyOps([makeMotionOp('motion.setCamera', doc.id, { camera: newCam })], 'Set camera Z'); }} style={{ width: '80px', background: 'var(--color-well)', border: '1px solid var(--color-border)', borderRadius: '3px', color: 'var(--color-fg)', fontSize: '11px', fontFamily: 'var(--font-mono)', padding: '3px 6px' }} />
+        <input type="number" value={cam.transform.z} step={10} onChange={(e) => { const newCam = { ...cam, transform: { ...cam.transform, z: parseFloat(e.target.value) || -1000 } }; onApplyOps([makeMotionOp('motion.setCamera', doc.id, { camera: newCam })], 'Set camera Z'); }} style={{ width: '80px', background: 'var(--color-well)', border: '1px solid var(--color-border)', borderRadius: '3px', color: 'var(--color-fg)', fontSize: '11px', fontFamily: 'var(--font-mono)', padding: '3px 6px' }} />
       </div>
       <div style={{ fontSize: '10px', color: 'var(--color-subtle)', marginTop: '8px' }}>{cam.keyframes.length} keyframes</div>
     </div>
@@ -620,7 +646,7 @@ function DiagnosticsPanel({ doc, frameState }: DiagnosticsPanelProps) {
         <div>Objects: {Object.keys(doc.objects).length}</div>
         <div>Root objects: {doc.rootObjectIds.length}</div>
         <div>Signals: {Object.keys(doc.signals).length}</div>
-        <div>Rigs: {doc.rigs.length}</div>
+        <div>Rigs: {doc.rigs?.length ?? 0}</div>
         <div>Template: {doc.templateId ?? 'none'}</div>
         <div>Updated: {new Date(doc.updatedAt).toLocaleTimeString()}</div>
       </div>

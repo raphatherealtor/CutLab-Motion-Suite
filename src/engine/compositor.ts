@@ -713,12 +713,7 @@ export async function renderFrame(
         // Audio layers don't render visually
         break;
       }
-      case 'image': {
-        if (asset && asset.runtimeUrl) {
-          renderImageLayer(ctx, layer, asset, width, height);
-        }
-        break;
-      }
+      // Note: ClipKind has no 'image' — image assets are placed as video-kind clips
       case 'motion': {
         // Render MotionDocument
         if (layer.motionBundleId) {

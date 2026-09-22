@@ -39,7 +39,6 @@ function makeDoc(name: string, durationSecs: number, templateId: string): Motion
     rootObjectIds: [],
     signals: {},
     rigs: [],
-    camera: null,
     createdAt: now,
     updatedAt: now,
   };

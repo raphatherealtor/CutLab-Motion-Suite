@@ -4,15 +4,16 @@
  * TextMotionPanel — Flagship text authoring surface for CutLab Studio.
  * Word/phrase targeting, deep choreography, Captions as Set Design,
  * typographic materials, and spatial 2.5D text participation.
+ *
+ * Typed against the CANONICAL engine MotionDocument (ProjectData.motionDocuments).
+ * All edits flow: MotionOp[] → MotionTransaction → motionTransactionToStudioOps → one history entry.
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { useEngine } from '@/engine/store';
 import { resolveClipMotionDocument, motionTransactionToStudioOps } from '@/engine/motion-bridge';
-import type { MotionDocument, MotionObject, MotionTextSegment, MotionMaterial, MotionBehavior } from '@/motion/types';
-import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
-import { motionColorToHex, hexToMotionColor, secondsToMotionTime, motionTimeToSeconds } from '@/motion/types';
-import { generateMotionId } from '@/motion/utils';
+import type { MotionDocument, MotionObject, MotionTextSegment, MotionMaterial, MotionBehavior } from '@/engine/motion-document';
+import { makeOp as makeMotionOp, createMotionTransaction, generateMotionId, secondsToMotionTime, motionTimeToSeconds } from '@/engine/motion-document-utils';
 
 // ── Shared styles ─────────────────────────────────────────────
 
@@ -67,19 +68,19 @@ const WORD_MOTION_PRESETS = [
 
 // ── Material Presets ──────────────────────────────────────────
 
-const MATERIAL_PRESETS = [
-  { id: 'white', label: 'White', color: '#ffffff', type: 'flat' as const },
-  { id: 'chrome', label: 'Chrome', color: '#c0c0c0', type: 'procedural' as const, params: { style: 'chrome' } },
-  { id: 'glass', label: 'Glass', color: '#ffffff', type: 'glass' as const },
-  { id: 'neon-blue', label: 'Neon', color: '#00d4ff', type: 'neon' as const },
-  { id: 'neon-pink', label: 'Neon Pink', color: '#ff0080', type: 'neon' as const },
-  { id: 'neon-green', label: 'Neon Grn', color: '#00ff88', type: 'neon' as const },
-  { id: 'gold', label: 'Gold', color: '#ffd700', type: 'metal' as const },
-  { id: 'paper', label: 'Paper', color: '#2a1a0a', type: 'procedural' as const, params: { style: 'paper' } },
-  { id: 'halftone', label: 'Halftone', color: '#000000', type: 'procedural' as const, params: { style: 'halftone' } },
-  { id: 'gradient-fire', label: 'Fire', color: '#ff4500', type: 'gradient' as const, gradientStops: [{ color: { r: 1, g: 0.27, b: 0, a: 1 }, position: 0 }, { color: { r: 1, g: 0.84, b: 0, a: 1 }, position: 1 }], gradientAngle: 90 },
-  { id: 'gradient-ocean', label: 'Ocean', color: '#0066ff', type: 'gradient' as const, gradientStops: [{ color: { r: 0, g: 0.4, b: 1, a: 1 }, position: 0 }, { color: { r: 0, g: 0.85, b: 0.93, a: 1 }, position: 1 }], gradientAngle: 135 },
-  { id: 'gradient-sunset', label: 'Sunset', color: '#ff6b35', type: 'gradient' as const, gradientStops: [{ color: { r: 1, g: 0.42, b: 0.21, a: 1 }, position: 0 }, { color: { r: 0.93, g: 0.11, b: 0.47, a: 1 }, position: 1 }], gradientAngle: 135 },
+const MATERIAL_PRESETS: Array<{ id: string; label: string; color: string; type: MotionMaterial['type']; params?: Record<string, string | number | boolean> }> = [
+  { id: 'white', label: 'White', color: '#ffffff', type: 'solid' },
+  { id: 'chrome', label: 'Chrome', color: '#c0c0c0', type: 'metal', params: { style: 'chrome' } },
+  { id: 'glass', label: 'Glass', color: '#ffffff', type: 'glass' },
+  { id: 'neon-blue', label: 'Neon', color: '#00d4ff', type: 'neon' },
+  { id: 'neon-pink', label: 'Neon Pink', color: '#ff0080', type: 'neon' },
+  { id: 'neon-green', label: 'Neon Grn', color: '#00ff88', type: 'neon' },
+  { id: 'gold', label: 'Gold', color: '#ffd700', type: 'metal' },
+  { id: 'paper', label: 'Paper', color: '#2a1a0a', type: 'solid', params: { style: 'paper' } },
+  { id: 'halftone', label: 'Halftone', color: '#000000', type: 'solid', params: { style: 'halftone' } },
+  { id: 'gradient-fire', label: 'Fire', color: '#ff4500', type: 'gradient', params: { stop0: '#ff4500', stop1: '#ffd700', angle: 90 } },
+  { id: 'gradient-ocean', label: 'Ocean', color: '#0066ff', type: 'gradient', params: { stop0: '#0066ff', stop1: '#00d9ed', angle: 135 } },
+  { id: 'gradient-sunset', label: 'Sunset', color: '#ff6b35', type: 'gradient', params: { stop0: '#ff6b35', stop1: '#ed1c78', angle: 135 } },
 ];
 
 // ── Captions as Set Design Presets ────────────────────────────
@@ -283,23 +284,27 @@ function ContentSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; ob
 function TypographySection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; obj: MotionObject; seg?: MotionTextSegment; onApplyOps: (ops: ReturnType<typeof makeMotionOp>[], desc: string) => void }) {
   const [fontSize, setFontSize] = useState(seg?.fontSize ?? 48);
   const [fontWeight, setFontWeight] = useState(seg?.fontWeight ?? 700);
-  const [letterSpacing, setLetterSpacing] = useState(seg?.letterSpacing ?? 0);
-  const [lineHeight, setLineHeight] = useState(seg?.lineHeight ?? 1.2);
-  const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>(seg?.textAlign ?? 'center');
-  const [fontFamily, setFontFamily] = useState(seg?.fontFamily ?? 'Inter');
+  const [letterSpacing, setLetterSpacing] = useState(obj.letterSpacing ?? 0);
+  const [lineHeight, setLineHeight] = useState(obj.lineHeight ?? 1.2);
+  const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>(obj.textAlign ?? 'center');
+  const [fontFamily, setFontFamily] = useState(seg?.fontFamily ?? obj.fontFamily ?? 'Inter');
 
   useEffect(() => {
     setFontSize(seg?.fontSize ?? 48);
     setFontWeight(seg?.fontWeight ?? 700);
-    setLetterSpacing(seg?.letterSpacing ?? 0);
-    setLineHeight(seg?.lineHeight ?? 1.2);
-    setTextAlign(seg?.textAlign ?? 'center');
-    setFontFamily(seg?.fontFamily ?? 'Inter');
+    setLetterSpacing(obj.letterSpacing ?? 0);
+    setLineHeight(obj.lineHeight ?? 1.2);
+    setTextAlign(obj.textAlign ?? 'center');
+    setFontFamily(seg?.fontFamily ?? obj.fontFamily ?? 'Inter');
   }, [obj.id]);
 
   const commitSeg = (patch: Partial<MotionTextSegment>) => {
     if (!seg) return;
     onApplyOps([makeMotionOp('motion.setTextSegment', doc.id, { objectId: obj.id, segment: { ...seg, ...patch } })], 'Set typography');
+  };
+
+  const commitObjProp = (props: Partial<MotionObject>, desc: string) => {
+    onApplyOps([makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props })], desc);
   };
 
   const FONTS = ['Inter', 'Arial', 'Georgia', 'Courier New', 'Impact', 'Helvetica Neue', 'Playfair Display', 'Oswald', 'Montserrat', 'Roboto Mono', 'Times New Roman', 'Futura', 'Garamond'];
@@ -308,7 +313,7 @@ function TypographySection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument;
   return (
     <div style={{ padding: '10px' }}>
       <Label>Font Family</Label>
-      <select value={fontFamily} onChange={(e) => { setFontFamily(e.target.value); commitSeg({ fontFamily: e.target.value }); }} style={selectStyle}>
+      <select value={fontFamily} onChange={(e) => { setFontFamily(e.target.value); commitSeg({ fontFamily: e.target.value }); commitObjProp({ fontFamily: e.target.value }, 'Set font'); }} style={selectStyle}>
         {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
       </select>
 
@@ -325,11 +330,11 @@ function TypographySection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument;
         </div>
         <div>
           <Label>Tracking</Label>
-          <input type="number" value={letterSpacing} step={0.5} onChange={(e) => setLetterSpacing(+e.target.value)} onBlur={() => commitSeg({ letterSpacing })} style={numInputStyle} />
+          <input type="number" value={letterSpacing} step={0.5} onChange={(e) => setLetterSpacing(+e.target.value)} onBlur={() => commitObjProp({ letterSpacing }, 'Set tracking')} style={numInputStyle} />
         </div>
         <div>
           <Label>Line Height</Label>
-          <input type="number" value={lineHeight} step={0.05} min={0.5} max={4} onChange={(e) => setLineHeight(+e.target.value)} onBlur={() => commitSeg({ lineHeight })} style={numInputStyle} />
+          <input type="number" value={lineHeight} step={0.05} min={0.5} max={4} onChange={(e) => setLineHeight(+e.target.value)} onBlur={() => commitObjProp({ lineHeight }, 'Set line height')} style={numInputStyle} />
         </div>
       </div>
 
@@ -337,7 +342,7 @@ function TypographySection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument;
         <Label>Alignment</Label>
         <div style={{ display: 'flex', gap: '4px' }}>
           {(['left', 'center', 'right'] as const).map((a) => (
-            <button key={a} onClick={() => { setTextAlign(a); commitSeg({ textAlign: a }); }} style={{ flex: 1, padding: '4px', background: textAlign === a ? 'rgba(139,92,246,0.15)' : 'var(--color-well)', border: `1px solid ${textAlign === a ? 'rgba(139,92,246,0.4)' : 'var(--color-border)'}`, borderRadius: '3px', color: textAlign === a ? 'var(--color-accent-2)' : 'var(--color-muted)', cursor: 'pointer', fontSize: '11px' }}>
+            <button key={a} onClick={() => { setTextAlign(a); commitObjProp({ textAlign: a }, 'Set alignment'); }} style={{ flex: 1, padding: '4px', background: textAlign === a ? 'rgba(139,92,246,0.15)' : 'var(--color-well)', border: `1px solid ${textAlign === a ? 'rgba(139,92,246,0.4)' : 'var(--color-border)'}`, borderRadius: '3px', color: textAlign === a ? 'var(--color-accent-2)' : 'var(--color-muted)', cursor: 'pointer', fontSize: '11px' }}>
               {a === 'left' ? '⬅' : a === 'center' ? '↔' : '➡'}
             </button>
           ))}
@@ -398,7 +403,7 @@ function WordMotionSection({ doc, obj, onApplyOps }: { doc: MotionDocument; obj:
     if (!presetDef) return;
 
     // Remove existing word-motion behaviors first
-    const removeOps = obj.behaviors
+    const removeOps = (obj.behaviors ?? [])
       .filter((b) => b.type === 'word-by-word' || b.type === 'wave')
       .map((b) => makeMotionOp('motion.removeBehavior', doc.id, { objectId: obj.id, behaviorId: b.id }));
 
@@ -415,13 +420,13 @@ function WordMotionSection({ doc, obj, onApplyOps }: { doc: MotionDocument; obj:
   };
 
   const clearWordMotion = () => {
-    const removeOps = obj.behaviors
+    const removeOps = (obj.behaviors ?? [])
       .filter((b) => b.type === 'word-by-word' || b.type === 'wave')
       .map((b) => makeMotionOp('motion.removeBehavior', doc.id, { objectId: obj.id, behaviorId: b.id }));
     if (removeOps.length > 0) { onApplyOps(removeOps, 'Clear word motion'); setSelectedPreset(null); }
   };
 
-  const activeWordMotion = obj.behaviors.find((b) => b.type === 'word-by-word' || b.type === 'wave');
+  const activeWordMotion = (obj.behaviors ?? []).find((b) => b.type === 'word-by-word' || b.type === 'wave');
 
   return (
     <div style={{ padding: '10px' }}>
@@ -496,13 +501,14 @@ function WordMotionSection({ doc, obj, onApplyOps }: { doc: MotionDocument; obj:
 function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: MotionDocument; obj: MotionObject; onApplyOps: (ops: ReturnType<typeof makeMotionOp>[], desc: string) => void; clipId: string }) {
   const [activeCategory, setActiveCategory] = useState<'all' | 'transcript' | 'audio' | 'spatial' | 'visual'>('all');
 
+  const makeSignal = (id: string, name: string) => ({ id, name, type: 'number' as const, defaultValue: 0 });
+
   const applyPreset = (presetId: string) => {
     const docDurSecs = motionTimeToSeconds(doc.duration);
 
     switch (presetId) {
       case 'active-word-depth': {
         const sigId = generateMotionId('sig');
-        const signal = { id: sigId, kind: 'speech-timing' as const, name: 'Speech Timing' };
         const depthBeh: MotionBehavior = {
           id: generateMotionId('beh'),
           type: 'signal-reactive',
@@ -522,7 +528,7 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
           easing: 'spring',
         };
         onApplyOps([
-          makeMotionOp('motion.upsertSignal', doc.id, { signal }),
+          makeMotionOp('motion.upsertSignal', doc.id, { signal: makeSignal(sigId, 'Speech Timing') }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: depthBeh }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: scaleBeh }),
         ], 'Active word depth');
@@ -530,7 +536,6 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
       }
       case 'emphasis-punch': {
         const sigId = generateMotionId('sig');
-        const signal = { id: sigId, kind: 'semantic-emphasis' as const, name: 'Semantic Emphasis' };
         const punchBeh: MotionBehavior = {
           id: generateMotionId('beh'),
           type: 'signal-reactive',
@@ -550,7 +555,7 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
           easing: 'spring',
         };
         onApplyOps([
-          makeMotionOp('motion.upsertSignal', doc.id, { signal }),
+          makeMotionOp('motion.upsertSignal', doc.id, { signal: makeSignal(sigId, 'Semantic Emphasis') }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: punchBeh }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: depthBeh }),
         ], 'Emphasis punch');
@@ -570,7 +575,6 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
       }
       case 'speaker-style': {
         const sigId = generateMotionId('sig');
-        const signal = { id: sigId, kind: 'speech-timing' as const, name: 'Speaker Timing' };
         const colorBeh: MotionBehavior = {
           id: generateMotionId('beh'),
           type: 'signal-reactive',
@@ -581,14 +585,13 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
           easing: 'ease-out',
         };
         onApplyOps([
-          makeMotionOp('motion.upsertSignal', doc.id, { signal }),
+          makeMotionOp('motion.upsertSignal', doc.id, { signal: makeSignal(sigId, 'Speaker Timing') }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: colorBeh }),
         ], 'Speaker style');
         break;
       }
       case 'beat-pulse': {
         const sigId = generateMotionId('sig');
-        const signal = { id: sigId, kind: 'audio-beat' as const, name: 'Audio Beat' };
         const pulseBeh: MotionBehavior = {
           id: generateMotionId('beh'),
           type: 'signal-reactive',
@@ -599,14 +602,13 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
           easing: 'spring',
         };
         onApplyOps([
-          makeMotionOp('motion.upsertSignal', doc.id, { signal }),
+          makeMotionOp('motion.upsertSignal', doc.id, { signal: makeSignal(sigId, 'Audio Beat') }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: pulseBeh }),
         ], 'Beat pulse');
         break;
       }
       case 'onset-punch': {
         const sigId = generateMotionId('sig');
-        const signal = { id: sigId, kind: 'audio-onset' as const, name: 'Audio Onset' };
         const punchBeh: MotionBehavior = {
           id: generateMotionId('beh'),
           type: 'signal-reactive',
@@ -617,14 +619,13 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
           easing: 'bounce',
         };
         onApplyOps([
-          makeMotionOp('motion.upsertSignal', doc.id, { signal }),
+          makeMotionOp('motion.upsertSignal', doc.id, { signal: makeSignal(sigId, 'Audio Onset') }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: punchBeh }),
         ], 'Onset punch');
         break;
       }
       case 'bass-depth': {
         const sigId = generateMotionId('sig');
-        const signal = { id: sigId, kind: 'audio-low' as const, name: 'Bass' };
         const depthBeh: MotionBehavior = {
           id: generateMotionId('beh'),
           type: 'signal-reactive',
@@ -635,7 +636,7 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
           easing: 'ease-out',
         };
         onApplyOps([
-          makeMotionOp('motion.upsertSignal', doc.id, { signal }),
+          makeMotionOp('motion.upsertSignal', doc.id, { signal: makeSignal(sigId, 'Bass') }),
           makeMotionOp('motion.addBehavior', doc.id, { objectId: obj.id, behavior: depthBeh }),
         ], 'Bass depth');
         break;
@@ -643,8 +644,9 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
       case 'projector': {
         const material: MotionMaterial = {
           id: generateMotionId('mat'),
-          type: 'flat',
-          color: { r: 1, g: 1, b: 1, a: 0.9 },
+          name: 'Projector',
+          type: 'shadow',
+          color: '#ffffff',
           opacity: 0.9,
           params: { shadowX: 4, shadowY: 8, shadowBlur: 16, shadowColor: 'rgba(0,0,0,0.7)', projector: true },
         };
@@ -654,21 +656,21 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
       case 'behind-subject': {
         onApplyOps([
           makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: -1, occlusionRole: 'background' } }),
-          makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: -100 } } }),
+          makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: -100 } }),
         ], 'Behind subject');
         break;
       }
       case 'in-front': {
         onApplyOps([
           makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: 2, occlusionRole: 'foreground' } }),
-          makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: 200 } } }),
+          makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: 200 } }),
         ], 'In front of subject');
         break;
       }
       case 'foreground-cross': {
         onApplyOps([
           makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: 4, occlusionRole: 'foreground' } }),
-          makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: 400 } } }),
+          makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: 400 } }),
         ], 'Foreground frame cross');
         break;
       }
@@ -700,8 +702,9 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
       case 'projector-shadow': {
         const material: MotionMaterial = {
           id: generateMotionId('mat'),
-          type: 'procedural',
-          color: { r: 1, g: 1, b: 1, a: 1 },
+          name: 'Projector Shadow',
+          type: 'shadow',
+          color: '#ffffff',
           opacity: 1,
           params: { style: 'projector-shadow', shadowSpread: 20, shadowOpacity: 0.6 },
         };
@@ -749,10 +752,10 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
       </div>
 
       {/* Active bindings */}
-      {obj.behaviors.filter((b) => b.signalBinding || b.type === 'word-by-word').length > 0 && (
+      {(obj.behaviors ?? []).filter((b) => b.signalBinding || b.type === 'word-by-word').length > 0 && (
         <div style={{ marginTop: '10px' }}>
-          <Label>Active Bindings ({obj.behaviors.filter((b) => b.signalBinding || b.type === 'word-by-word').length})</Label>
-          {obj.behaviors.filter((b) => b.signalBinding || b.type === 'word-by-word').map((b) => (
+          <Label>Active Bindings ({(obj.behaviors ?? []).filter((b) => b.signalBinding || b.type === 'word-by-word').length})</Label>
+          {(obj.behaviors ?? []).filter((b) => b.signalBinding || b.type === 'word-by-word').map((b) => (
             <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', background: 'rgba(34,211,238,0.06)', border: '1px solid rgba(34,211,238,0.15)', borderRadius: '3px', marginBottom: '3px' }}>
               <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#22D3EE', flexShrink: 0 }} />
               <span style={{ fontSize: '9px', color: 'var(--color-fg)', flex: 1, fontFamily: 'var(--font-mono)' }}>{b.type} → {(b.params.property as string) ?? b.type}</span>
@@ -768,8 +771,9 @@ function CaptionsSetDesignSection({ doc, obj, onApplyOps, clipId }: { doc: Motio
 // ── Material Section ──────────────────────────────────────────
 
 function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; obj: MotionObject; seg?: MotionTextSegment; onApplyOps: (ops: ReturnType<typeof makeMotionOp>[], desc: string) => void }) {
-  const [customColor, setCustomColor] = useState(obj.material?.color ? motionColorToHex(obj.material.color) : '#ffffff');
-  const [opacity, setOpacity] = useState((obj.material?.opacity ?? 1) * 100);
+  const objMaterial: MotionMaterial | undefined = obj.materialId ? doc.materials[obj.materialId] : undefined;
+  const [customColor, setCustomColor] = useState(objMaterial?.color ?? '#ffffff');
+  const [opacity, setOpacity] = useState((objMaterial?.opacity ?? 1) * 100);
   const [gradStart, setGradStart] = useState('#3b82f6');
   const [gradEnd, setGradEnd] = useState('#8b5cf6');
   const [gradAngle, setGradAngle] = useState(135);
@@ -777,18 +781,31 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
   const [glowRadius, setGlowRadius] = useState(20);
 
   useEffect(() => {
-    setCustomColor(obj.material?.color ? motionColorToHex(obj.material.color) : '#ffffff');
-    setOpacity((obj.material?.opacity ?? 1) * 100);
+    setCustomColor(objMaterial?.color ?? '#ffffff');
+    setOpacity((objMaterial?.opacity ?? 1) * 100);
   }, [obj.id]);
 
   const applyMaterialPreset = (preset: typeof MATERIAL_PRESETS[0]) => {
     const material: MotionMaterial = {
       id: generateMotionId('mat'),
+      name: preset.label,
       type: preset.type,
-      color: hexToMotionColor(preset.color),
+      color: preset.color,
       opacity: opacity / 100,
-      ...('gradientStops' in preset ? { gradientStops: preset.gradientStops, gradientAngle: preset.gradientAngle } : {}),
-      ...('params' in preset ? { params: preset.params } : {}),
+      ...('params' in preset && preset.params ? {
+        params: preset.params,
+        ...(preset.type === 'gradient' ? {
+          gradientStops: [
+            { offset: 0, color: String(preset.params.stop0 ?? preset.color) },
+            { offset: 1, color: String(preset.params.stop1 ?? preset.color) },
+          ],
+          gradientAngle: Number(preset.params.angle ?? 135),
+        } : preset.type === 'neon' ? {
+          neonColor: preset.color,
+          neonBlur: 18,
+          neonIntensity: 1.5,
+        } : {}),
+      } : {}),
     };
     onApplyOps([makeMotionOp('motion.setMaterial', doc.id, { objectId: obj.id, material })], `Material: ${preset.label}`);
   };
@@ -796,11 +813,12 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
   const applyCustomGradient = () => {
     const material: MotionMaterial = {
       id: generateMotionId('mat'),
+      name: 'Custom Gradient',
       type: 'gradient',
-      color: hexToMotionColor(gradStart),
+      color: gradStart,
       gradientStops: [
-        { color: hexToMotionColor(gradStart), position: 0 },
-        { color: hexToMotionColor(gradEnd), position: 1 },
+        { offset: 0, color: gradStart },
+        { offset: 1, color: gradEnd },
       ],
       gradientAngle: gradAngle,
       opacity: opacity / 100,
@@ -811,9 +829,13 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
   const applyGlow = () => {
     const material: MotionMaterial = {
       id: generateMotionId('mat'),
+      name: 'Glow',
       type: 'neon',
-      color: hexToMotionColor(glowColor),
+      color: glowColor,
       opacity: opacity / 100,
+      neonColor: glowColor,
+      neonBlur: glowRadius,
+      neonIntensity: 1.5,
       params: { glowRadius, glowIntensity: 1.5 },
     };
     onApplyOps([makeMotionOp('motion.setMaterial', doc.id, { objectId: obj.id, material })], 'Glow material');
@@ -821,8 +843,8 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
 
   const commitCustomColor = (hex: string) => {
     const material: MotionMaterial = {
-      ...(obj.material ?? { id: generateMotionId('mat'), type: 'flat' as const }),
-      color: hexToMotionColor(hex),
+      ...(objMaterial ?? { id: generateMotionId('mat'), name: 'Fill', type: 'solid' as const }),
+      color: hex,
       opacity: opacity / 100,
     };
     onApplyOps([makeMotionOp('motion.setMaterial', doc.id, { objectId: obj.id, material })], 'Set color');
@@ -855,7 +877,7 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
       <Label>Opacity</Label>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
         <input type="range" min={0} max={100} value={opacity} onChange={(e) => setOpacity(+e.target.value)} onMouseUp={() => {
-          const material: MotionMaterial = { ...(obj.material ?? { id: generateMotionId('mat'), type: 'flat' as const }), opacity: opacity / 100 };
+          const material: MotionMaterial = { ...(objMaterial ?? { id: generateMotionId('mat'), name: 'Fill', type: 'solid' as const }), opacity: opacity / 100 };
           onApplyOps([makeMotionOp('motion.setMaterial', doc.id, { objectId: obj.id, material })], 'Set opacity');
         }} className="range-slider" style={{ flex: 1 }} aria-label="Material opacity" />
         <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--color-fg)', minWidth: '28px' }}>{Math.round(opacity)}%</span>
@@ -904,16 +926,16 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
 
 function SpatialSection({ doc, obj, onApplyOps }: { doc: MotionDocument; obj: MotionObject; onApplyOps: (ops: ReturnType<typeof makeMotionOp>[], desc: string) => void }) {
   const [depth, setDepth] = useState(obj.depth);
-  const [posZ, setPosZ] = useState(obj.transform.position.z);
+  const [posZ, setPosZ] = useState(obj.transform.z);
   const [parallaxAmt, setParallaxAmt] = useState(20);
   const [cameraResponse, setCameraResponse] = useState(0.5);
 
-  useEffect(() => { setDepth(obj.depth); setPosZ(obj.transform.position.z); }, [obj.id]);
+  useEffect(() => { setDepth(obj.depth); setPosZ(obj.transform.z); }, [obj.id]);
 
   const applySpatialPreset = (preset: typeof SPATIAL_PRESETS[0]) => {
     const ops: ReturnType<typeof makeMotionOp>[] = [
       makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: preset.depth, ...(preset.occlusionRole ? { occlusionRole: preset.occlusionRole } : {}) } }),
-      makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: preset.z } } }),
+      makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: preset.z } }),
     ];
     setDepth(preset.depth);
     setPosZ(preset.z);
@@ -972,7 +994,7 @@ function SpatialSection({ doc, obj, onApplyOps }: { doc: MotionDocument; obj: Mo
         </div>
         <div>
           <Label>Z Position</Label>
-          <input type="number" value={posZ} step={10} onChange={(e) => setPosZ(+e.target.value)} onBlur={() => onApplyOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: posZ } } })], 'Set Z position')} style={numInputStyle} />
+          <input type="number" value={posZ} step={10} onChange={(e) => setPosZ(+e.target.value)} onBlur={() => onApplyOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: posZ } })], 'Set Z position')} style={numInputStyle} />
         </div>
       </div>
 

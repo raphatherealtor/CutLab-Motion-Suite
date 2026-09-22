@@ -10,10 +10,8 @@
 import React, { useState, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
 import { resolveClipMotionDocument, motionTransactionToStudioOps } from '@/engine/motion-bridge';
-import type { MotionDocument, MotionObject, MotionBehavior } from '@/motion/types';
-import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
-import { secondsToMotionTime, motionTimeToSeconds } from '@/motion/types';
-import { generateMotionId } from '@/motion/utils';
+import type { MotionDocument, MotionObject, MotionBehavior, MotionMaterial } from '@/engine/motion-document';
+import { makeOp as makeMotionOp, createMotionTransaction, generateMotionId, secondsToMotionTime, motionTimeToSeconds } from '@/engine/motion-document-utils';
 
 // ── Spatial Rigs ──────────────────────────────────────────────
 
@@ -28,7 +26,7 @@ const SPATIAL_RIGS = [
         const depth = (i / Math.max(1, count - 1)) * 6 - 3;
         const z = depth * 100;
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z } }));
       });
       return ops;
     },
@@ -41,7 +39,7 @@ const SPATIAL_RIGS = [
       objs.forEach((obj, i) => {
         const isFg = i % 2 === 0;
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: isFg ? 2 : -2, occlusionRole: isFg ? 'foreground' : 'background' } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: isFg ? 200 : -200 } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: isFg ? 200 : -200 } }));
       });
       return ops;
     },
@@ -56,7 +54,7 @@ const SPATIAL_RIGS = [
         const z = -t * 600;
         const scale = 1 - t * 0.4;
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: -t * 4 } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z }, scale: { x: scale, y: scale, z: 1 } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z, scaleX: scale, scaleY: scale } }));
       });
       return ops;
     },
@@ -76,7 +74,7 @@ const SPATIAL_RIGS = [
       objs.forEach((obj, i) => {
         const pos = positions[i % positions.length];
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: pos.depth } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { x: pos.x, y: pos.y, z: pos.z } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { x: pos.x, y: pos.y, z: pos.z } }));
       });
       return ops;
     },
@@ -93,7 +91,7 @@ const SPATIAL_RIGS = [
         const z = Math.cos(angle) * radius - radius;
         const depth = Math.cos(angle) * 3;
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { x, y: 0, z } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { x, y: 0, z } }));
       });
       return ops;
     },
@@ -111,7 +109,7 @@ const SPATIAL_RIGS = [
         const y = Math.cos(angle) * radius * 0.5;
         const z = -t * 800;
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: -t * 5 } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { x, y, z } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { x, y, z } }));
       });
       return ops;
     },
@@ -126,7 +124,7 @@ const SPATIAL_RIGS = [
         const depth = isFrame ? 3 : -1;
         const z = isFrame ? 300 : -100;
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth, occlusionRole: isFrame ? 'foreground' : 'background' } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z } }));
       });
       return ops;
     },
@@ -146,7 +144,7 @@ const SPATIAL_RIGS = [
       objs.forEach((obj, i) => {
         const layer = layers[Math.min(i, layers.length - 1)];
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: layer.depth, occlusionRole: layer.occlusionRole } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: layer.z } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: layer.z } }));
       });
       return ops;
     },
@@ -266,6 +264,10 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
 
   const docDurSecs = motionTimeToSeconds(doc.duration);
 
+  // Canonical camera access — cameras map + activeCameraId
+  const activeCamera = doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined;
+  const getActiveCam = () => activeCamera;
+
   const applyRig = (rig: typeof SPATIAL_RIGS[0]) => {
     const ops = rig.apply(doc);
     applyMotionOps(ops, `Spatial rig: ${rig.label}`);
@@ -273,28 +275,29 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
 
   const applyCameraMove = (move: typeof CAMERA_MOVES[0]) => {
     const ops: ReturnType<typeof makeMotionOp>[] = [];
-    const baseCam = doc.camera ?? {
+    const baseCam = (doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined) ?? {
       id: generateMotionId('cam'),
       name: 'Camera',
-      transform: { position: { x: 0, y: 0, z: cameraZ }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 },
+      transform: { x: 0, y: 0, z: cameraZ, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 },
       keyframes: [],
       fov: cameraFov,
       near: 1,
       far: 10000,
+      active: true,
     };
 
     const newKfs: typeof baseCam.keyframes = [];
     if ('zStart' in move && move.zStart !== undefined) {
-      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: cameraZ + (move.zStart ?? 0), easing: 'ease-in-out' });
-      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: cameraZ + (move.zEnd ?? 0), easing: 'ease-in-out' });
+      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: cameraZ + (move.zStart ?? 0), easing: 'ease-in-out' });
+      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: cameraZ + (move.zEnd ?? 0), easing: 'ease-in-out' });
     }
     if ('xStart' in move && move.xStart !== undefined) {
-      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.x', value: move.xStart, easing: 'ease-in-out' });
-      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.x', value: move.xEnd ?? 0, easing: 'ease-in-out' });
+      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'x', value: move.xStart, easing: 'ease-in-out' });
+      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'x', value: move.xEnd ?? 0, easing: 'ease-in-out' });
     }
     if ('yStart' in move && move.yStart !== undefined) {
-      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.y', value: move.yStart, easing: 'ease-in-out' });
-      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.y', value: move.yEnd ?? 0, easing: 'ease-in-out' });
+      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'y', value: move.yStart, easing: 'ease-in-out' });
+      newKfs.push({ id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'y', value: move.yEnd ?? 0, easing: 'ease-in-out' });
     }
 
     const updatedCam = {
@@ -335,7 +338,7 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
     switch (compId) {
       case 'semantic-depth-caption': {
         const sigId = generateMotionId('sig');
-        ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: { id: sigId, kind: 'speech-timing', name: 'Speech Timing' } }));
+        ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: { id: sigId, name: 'speech-timing', type: 'number' as const, defaultValue: 0 } }));
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: firstObj.id, props: { depth: 0 } }));
         const depthBeh: MotionBehavior = {
           id: generateMotionId('beh'), type: 'signal-reactive',
@@ -343,7 +346,7 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
           params: { property: 'position.z', min: 0, max: 120 }, signalBinding: sigId, easing: 'spring',
         };
         const emphSigId = generateMotionId('sig');
-        ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: { id: emphSigId, kind: 'semantic-emphasis', name: 'Semantic Emphasis' } }));
+        ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: { id: emphSigId, name: 'semantic-emphasis', type: 'number' as const, defaultValue: 0 } }));
         const emphBeh: MotionBehavior = {
           id: generateMotionId('beh'), type: 'signal-reactive',
           startTime: secondsToMotionTime(0), duration: secondsToMotionTime(docDurSecs),
@@ -355,16 +358,16 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
       }
       case 'behind-subject-editorial': {
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: firstObj.id, props: { depth: -1, occlusionRole: 'background' } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: firstObj.id, transform: { position: { ...firstObj.transform.position, z: -100 } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: firstObj.id, transform: { z: -100 } }));
         break;
       }
       case 'projector-typography': {
-        const projMat = { id: generateMotionId('mat'), type: 'flat' as const, color: { r: 1, g: 1, b: 1, a: 0.9 }, opacity: 0.9, params: { projector: true, shadowBlur: 20, shadowOpacity: 0.7 } };
+        const projMat: MotionMaterial = { id: generateMotionId('mat'), name: 'Projector', type: 'shadow', color: '#ffffff', opacity: 0.9, params: { projector: true, shadowBlur: 20, shadowOpacity: 0.7 } };
         ops.push(makeMotionOp('motion.setMaterial', doc.id, { objectId: firstObj.id, material: projMat }));
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: firstObj.id, props: { depth: 1 } }));
         // Camera response
-        const cam = doc.camera ?? { id: generateMotionId('cam'), name: 'Camera', transform: { position: { x: 0, y: 0, z: cameraZ }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 }, keyframes: [], fov: cameraFov, near: 1, far: 10000 };
-        const updCam = { ...cam, keyframes: [...cam.keyframes, { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: cameraZ, easing: 'ease-in-out' as const }, { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: cameraZ + 80, easing: 'ease-in-out' as const }] };
+        const cam = getActiveCam() ?? { id: generateMotionId('cam'), name: 'Camera', transform: { x: 0, y: 0, z: cameraZ, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 }, keyframes: [], fov: cameraFov, near: 1, far: 10000, active: true };
+        const updCam = { ...cam, keyframes: [...cam.keyframes, { id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: cameraZ, easing: 'ease-in-out' as const }, { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: cameraZ + 80, easing: 'ease-in-out' as const }] };
         ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: updCam }));
         break;
       }
@@ -373,17 +376,17 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
         rootObjs.forEach((obj, i) => {
           const depth = (i / Math.max(1, rootObjs.length - 1)) * 4 - 2;
           ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth } }));
-          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: depth * 80 } } }));
+          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: depth * 80 } }));
         });
         // Camera push
-        const cam = doc.camera ?? { id: generateMotionId('cam'), name: 'Camera', transform: { position: { x: 0, y: 0, z: cameraZ }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 }, keyframes: [], fov: cameraFov, near: 1, far: 10000 };
-        const updCam = { ...cam, keyframes: [{ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: cameraZ, easing: 'ease-in-out' as const }, { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: cameraZ + 150, easing: 'ease-in-out' as const }] };
+        const cam = getActiveCam() ?? { id: generateMotionId('cam'), name: 'Camera', transform: { x: 0, y: 0, z: cameraZ, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 }, keyframes: [], fov: cameraFov, near: 1, far: 10000, active: true };
+        const updCam = { ...cam, keyframes: [{ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: cameraZ, easing: 'ease-in-out' as const }, { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: cameraZ + 150, easing: 'ease-in-out' as const }] };
         ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: updCam }));
         break;
       }
       case 'beat-reactive-card': {
         const beatSigId = generateMotionId('sig');
-        ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: { id: beatSigId, kind: 'audio-beat', name: 'Audio Beat' } }));
+        ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: { id: beatSigId, name: 'audio-beat', type: 'number' as const, defaultValue: 0 } }));
         const scaleBeh: MotionBehavior = { id: generateMotionId('beh'), type: 'signal-reactive', startTime: secondsToMotionTime(0), duration: secondsToMotionTime(docDurSecs), params: { property: 'scale.x', min: 0.97, max: 1.04 }, signalBinding: beatSigId, easing: 'spring' };
         const depthBeh: MotionBehavior = { id: generateMotionId('beh'), type: 'signal-reactive', startTime: secondsToMotionTime(0), duration: secondsToMotionTime(docDurSecs), params: { property: 'position.z', min: 0, max: 30 }, signalBinding: beatSigId, easing: 'spring' };
         ops.push(makeMotionOp('motion.addBehavior', doc.id, { objectId: firstObj.id, behavior: scaleBeh }));
@@ -395,19 +398,19 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
         const corridorOps = SPATIAL_RIGS.find((r) => r.id === 'corridor')?.apply(doc) ?? [];
         ops.push(...corridorOps);
         // Add camera push
-        const cam = doc.camera ?? { id: generateMotionId('cam'), name: 'Camera', transform: { position: { x: 0, y: 0, z: cameraZ }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 }, keyframes: [], fov: cameraFov, near: 1, far: 10000 };
-        const updCam = { ...cam, keyframes: [{ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'position.z', value: cameraZ, easing: 'ease-in-out' as const }, { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'position.z', value: cameraZ + 300, easing: 'ease-in-out' as const }] };
+        const cam = getActiveCam() ?? { id: generateMotionId('cam'), name: 'Camera', transform: { x: 0, y: 0, z: cameraZ, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 }, keyframes: [], fov: cameraFov, near: 1, far: 10000, active: true };
+        const updCam = { ...cam, keyframes: [{ id: generateMotionId('kf'), time: secondsToMotionTime(0), property: 'z', value: cameraZ, easing: 'ease-in-out' as const }, { id: generateMotionId('kf'), time: secondsToMotionTime(docDurSecs), property: 'z', value: cameraZ + 300, easing: 'ease-in-out' as const }] };
         ops.push(makeMotionOp('motion.setCamera', doc.id, { camera: updCam }));
         break;
       }
       case 'frame-break-composition': {
         // First object breaks the frame (very high depth)
         ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: firstObj.id, props: { depth: 5, occlusionRole: 'foreground' } }));
-        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: firstObj.id, transform: { position: { ...firstObj.transform.position, z: 500 }, scale: { x: 1.15, y: 1.15, z: 1 } } }));
+        ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: firstObj.id, transform: { z: 500, scaleX: 1.15, scaleY: 1.15 } }));
         // Remaining objects stay in background
         rootObjs.slice(1).forEach((obj) => {
           ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: -2, occlusionRole: 'background' } }));
-          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: -200 } } }));
+          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: -200 } }));
         });
         break;
       }
@@ -421,7 +424,7 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
           const z = Math.cos(angle) * radius - radius;
           const depth = Math.cos(angle) * 2;
           ops.push(makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth } }));
-          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { x, y: 0, z }, rotation: { x: 0, y: angle * (180 / Math.PI), z: 0 } } }));
+          ops.push(makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { x, y: 0, z, rotationY: angle * (180 / Math.PI) } }));
         });
         break;
       }
@@ -506,11 +509,11 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
               ))}
             </div>
 
-            {doc.camera && (
+            {activeCamera && (
               <div style={{ marginTop: '10px', padding: '6px 8px', background: 'rgba(59,130,255,0.06)', border: '1px solid rgba(59,130,255,0.15)', borderRadius: '4px' }}>
                 <div style={{ fontSize: '9px', color: 'var(--color-subtle)', marginBottom: '3px' }}>Active Camera</div>
                 <div style={{ fontSize: '10px', color: 'var(--color-fg)', fontFamily: 'var(--font-mono)' }}>
-                  z:{doc.camera.transform.position.z.toFixed(0)} · fov:{doc.camera.fov}° · {doc.camera.keyframes.length}kf
+                  z:{activeCamera.transform.z.toFixed(0)} · fov:{activeCamera.fov}° · {activeCamera.keyframes.length}kf
                 </div>
               </div>
             )}
@@ -545,7 +548,7 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
                     onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectProp', doc.id, { objectId: obj.id, props: { depth: +e.target.value } })], 'Set depth')}
                     style={{ width: '50px', background: 'var(--color-elevated)', border: '1px solid var(--color-border)', borderRadius: '3px', color: 'var(--color-fg)', fontSize: '10px', fontFamily: 'var(--font-mono)', padding: '2px 4px' }}
                   />
-                  <span style={{ fontSize: '9px', color: 'var(--color-subtle)', minWidth: '30px', fontFamily: 'var(--font-mono)' }}>z:{obj.transform.position.z.toFixed(0)}</span>
+                  <span style={{ fontSize: '9px', color: 'var(--color-subtle)', minWidth: '30px', fontFamily: 'var(--font-mono)' }}>z:{obj.transform.z.toFixed(0)}</span>
                 </div>
               );
             })}
@@ -605,23 +608,23 @@ export default function SpatialDepthPanel({ clipId }: SpatialDepthPanelProps) {
                     </div>
                     <div>
                       <Label>Z Pos</Label>
-                      <input type="number" defaultValue={obj.transform.position.z} step={10} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, z: +e.target.value } } })], 'Set Z')} style={{ ...numInputStyle, fontSize: '10px' }} />
+                      <input type="number" defaultValue={obj.transform.z} step={10} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { z: +e.target.value } })], 'Set Z')} style={{ ...numInputStyle, fontSize: '10px' }} />
                     </div>
                     <div>
                       <Label>X Pos</Label>
-                      <input type="number" defaultValue={obj.transform.position.x} step={5} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, x: +e.target.value } } })], 'Set X')} style={{ ...numInputStyle, fontSize: '10px' }} />
+                      <input type="number" defaultValue={obj.transform.x} step={5} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { x: +e.target.value } })], 'Set X')} style={{ ...numInputStyle, fontSize: '10px' }} />
                     </div>
                     <div>
                       <Label>Y Pos</Label>
-                      <input type="number" defaultValue={obj.transform.position.y} step={5} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { position: { ...obj.transform.position, y: +e.target.value } } })], 'Set Y')} style={{ ...numInputStyle, fontSize: '10px' }} />
+                      <input type="number" defaultValue={obj.transform.y} step={5} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { y: +e.target.value } })], 'Set Y')} style={{ ...numInputStyle, fontSize: '10px' }} />
                     </div>
                     <div>
                       <Label>Scale X</Label>
-                      <input type="number" defaultValue={obj.transform.scale.x} step={0.05} min={0.01} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { scale: { ...obj.transform.scale, x: +e.target.value } } })], 'Set scale X')} style={{ ...numInputStyle, fontSize: '10px' }} />
+                      <input type="number" defaultValue={obj.transform.scaleX} step={0.05} min={0.01} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { scaleX: +e.target.value } })], 'Set scale X')} style={{ ...numInputStyle, fontSize: '10px' }} />
                     </div>
                     <div>
                       <Label>Rotation Z</Label>
-                      <input type="number" defaultValue={obj.transform.rotation.z} step={1} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { rotation: { ...obj.transform.rotation, z: +e.target.value } } })], 'Set rotation')} style={{ ...numInputStyle, fontSize: '10px' }} />
+                      <input type="number" defaultValue={obj.transform.rotationZ} step={1} onBlur={(e) => applyMotionOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: { rotationZ: +e.target.value } })], 'Set rotation')} style={{ ...numInputStyle, fontSize: '10px' }} />
                     </div>
                   </div>
                   <div style={{ marginTop: '4px' }}>

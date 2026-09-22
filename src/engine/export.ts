@@ -339,10 +339,14 @@ function ExportCancelledError(...args: any[]): any {
 }
 
 export { ExportCancelledError };
-function RenderProgressEvent(...args: any[]): any {
-  // eslint-disable-next-line no-console
-  console.warn('Placeholder: RenderProgressEvent is not implemented yet.', args);
-  return null;
+/** Progress event emitted by the export pipeline. */
+export interface RenderProgressEvent {
+  /** Render progress 0..1 */
+  progress: number;
+  /** Current frame being rendered */
+  frame?: number;
+  /** Total frames in the render */
+  totalFrames?: number;
+  /** Human-readable render stage */
+  stage?: string;
 }
-
-export { RenderProgressEvent };

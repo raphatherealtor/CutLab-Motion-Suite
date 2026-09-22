@@ -18,11 +18,9 @@
  * Preview uses preview transactions — canonical state is NEVER mutated during exploration.
  */
 
-import type { MotionDocument, MotionOp, FrameState } from '@/motion/types';
-import { applyMotionOps } from '@/motion/transaction';
-import { compileMotion, evaluateMotion } from '@/motion/evaluate';
-import { generateMotionId } from '@/motion/utils';
-import type { Sequence } from './schema';
+import type { MotionOp, MotionDocument } from './motion-document';
+import { applyMotionTransaction } from './motion-document';
+import { evaluateMotionDocument, generateMotionId, type FrameState } from './motion-document-utils';
 import type { StudioAnalysisContract } from './analysis-contract';
 import type { MotionAgentContext } from './agent-context';
 
@@ -347,7 +345,7 @@ export function buildProposal(
             opId: generateMotionId(),
             type: 'motion.setMaterial',
             documentId: doc.id,
-            payload: { objectId: objId, material: { id: generateMotionId(), type: materialType } },
+            payload: { objectId: objId, material: { id: generateMotionId(), name: term.term, type: materialType } },
             actor: 'ai',
             createdAt: Date.now(),
           };
@@ -361,7 +359,7 @@ export function buildProposal(
           });
         }
 
-        if (term.category === 'SPACE' && term.term === 'depth-step') {
+        if (term.term === 'depth-step' && (term.category === 'CHOREOGRAPHY' || term.category === 'SPACE')) {
           const op: MotionOp = {
             opId: generateMotionId(),
             type: 'motion.setObjectProp',
@@ -419,8 +417,9 @@ export function buildProposal(
             payload: {
               signal: {
                 id: term.term,
-                kind: term.term.replace('-', '_') as 'audio-rms',
+                type: 'number',
                 name: term.term,
+                defaultValue: 0,
               },
             },
             actor: 'ai',
@@ -489,9 +488,8 @@ export function previewProposal(
   signalValues: Record<string, number>
 ): { frameState: FrameState; trace: AIEvaluationTrace } {
   // Apply ops to a temporary copy — canonical state untouched
-  const previewDoc = applyMotionOps(doc, proposal.canonicalOps);
-  const program = compileMotion(previewDoc);
-  const frameState = evaluateMotion(previewDoc, program, localTimeSecs, signalValues);
+  const previewDoc = applyMotionTransaction(doc, { ops: proposal.canonicalOps, description: `preview: ${proposal.intent}` });
+  const frameState = evaluateMotionDocument(previewDoc, localTimeSecs, signalValues);
 
   // Build evaluation trace
   const trace = evaluateProposalTrace(proposal, doc, previewDoc, frameState);
@@ -503,7 +501,7 @@ function evaluateProposalTrace(
   proposal: AIProposal,
   originalDoc: MotionDocument,
   previewDoc: MotionDocument,
-  frameState: FrameState
+  _frameState: FrameState
 ): AIEvaluationTrace {
   const corrections: AIEvaluationTrace['corrections'] = [];
 
@@ -515,7 +513,7 @@ function evaluateProposalTrace(
     if (original && preview) {
       const depthChanged = Math.abs((preview.depth ?? 0) - (original.depth ?? 0)) > 0.01;
       const behaviorAdded = preview.behaviors.length > original.behaviors.length;
-      const materialChanged = JSON.stringify(preview.material) !== JSON.stringify(original.material);
+      const materialChanged = preview.materialId !== original.materialId;
       if (depthChanged || behaviorAdded || materialChanged) {
         targetMoved = true;
       }
@@ -611,8 +609,9 @@ export function selfCorrectProposal(
             payload: {
               signal: {
                 id: signalId,
-                kind: signalId.replace('-', '_') as 'audio-rms',
+                type: 'number',
                 name: signalId,
+                defaultValue: 0,
               },
             },
             actor: 'ai',

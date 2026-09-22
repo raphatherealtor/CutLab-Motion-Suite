@@ -18,10 +18,11 @@ import { createMotionAnimatorHostBridge } from '@/engine/motion-animator-host-br
 import type { WorkspaceHandoff } from '@/engine/workspace-context';
 import { buildReturnHandoff } from '@/engine/workspace-context';
 import type {
-  FrameState, MotionDocument, MotionObject, MotionKeyframe, MotionBehavior
-} from '@/motion/types';
-import { motionTimeToSeconds } from '@/motion/types';
-import { makeMotionOp } from '@/motion/transaction';
+  MotionDocument, MotionObject, MotionKeyframe, MotionBehavior
+} from '@/engine/motion-document';
+import { type FrameState, motionTimeToSeconds } from '@/engine/motion-document-utils';
+import { evaluateMotionDocument } from '@/engine/motion-document-utils';
+import { makeOp as makeMotionOp } from '@/engine/motion-document-utils';
 import TextMotionPanel from './TextMotionPanel';
 import CreativeMacrosPanel from './CreativeMacrosPanel';
 import SignalBindingPanel from './SignalBindingPanel';
@@ -114,11 +115,11 @@ function CanonicalCanvas({
           const tr = getTransform(s);
           const obj = doc.objects[s.objectId];
           if (!obj || !tr) return null;
-          const x = 50 + (tr.position?.x ?? 0) / Math.max(doc.width, 1) * 100;
-          const y = 50 + (tr.position?.y ?? 0) / Math.max(doc.height, 1) * 100;
-          const sx = tr.scale?.x ?? 1;
-          const sy = tr.scale?.y ?? 1;
-          const rz = tr.rotation?.z ?? 0;
+          const x = 50 + (tr.x ?? 0) / Math.max(doc.width, 1) * 100;
+          const y = 50 + (tr.y ?? 0) / Math.max(doc.height, 1) * 100;
+          const sx = tr.scaleX ?? 1;
+          const sy = tr.scaleY ?? 1;
+          const rz = tr.rotationZ ?? 0;
           const opacity = s.opacity ?? tr.opacity ?? 1;
           const depth = s.depth ?? obj.depth ?? 0;
           const text = s.textContent ?? obj.textSegments?.map(seg => seg.text).join(' ') ?? obj.name;
@@ -267,12 +268,12 @@ function Inspector({
     </div>
     <div className="p-3 space-y-2">
       <div className="text-[9px] uppercase tracking-widest text-muted-foreground">Transform</div>
-      {num('Position X',t.position.x,v=>setTransform({position:{...t.position,x:v}},'Set Position X'))}
-      {num('Position Y',t.position.y,v=>setTransform({position:{...t.position,y:v}},'Set Position Y'))}
-      {num('Depth Z',t.position.z,v=>setTransform({position:{...t.position,z:v}},'Set Depth Z'))}
-      {num('Rotation Z',t.rotation.z,v=>setTransform({rotation:{...t.rotation,z:v}},'Set Rotation Z'))}
-      {num('Scale X',t.scale.x,v=>setTransform({scale:{...t.scale,x:v}},'Set Scale X'))}
-      {num('Scale Y',t.scale.y,v=>setTransform({scale:{...t.scale,y:v}},'Set Scale Y'))}
+      {num('Position X',t.x,v=>setTransform({x:v},'Set Position X'))}
+      {num('Position Y',t.y,v=>setTransform({y:v},'Set Position Y'))}
+      {num('Depth Z',t.z,v=>setTransform({z:v},'Set Depth Z'))}
+      {num('Rotation Z',t.rotationZ,v=>setTransform({rotationZ:v},'Set Rotation Z'))}
+      {num('Scale X',t.scaleX,v=>setTransform({scaleX:v},'Set Scale X'))}
+      {num('Scale Y',t.scaleY,v=>setTransform({scaleY:v},'Set Scale Y'))}
       {num('Opacity',t.opacity,v=>setTransform({opacity:Math.max(0,Math.min(1,v))},'Set Opacity'))}
     </div>
     <div className="p-3 border-t border-border space-y-2">
@@ -280,7 +281,7 @@ function Inspector({
       <div className="text-[10px] text-muted-foreground">{object.keyframes.length} keyframes</div>
       <div className="text-[10px] text-muted-foreground">{object.behaviors.length} behaviors</div>
       <div className="text-[10px] text-muted-foreground">{object.masks.length} masks</div>
-      <div className="text-[10px] text-muted-foreground">{object.material?.type ?? 'no material'}</div>
+      <div className="text-[10px] text-muted-foreground">{(object.materialId ? doc.materials[object.materialId]?.type : undefined) ?? 'no material'}</div>
     </div>
   </div>;
 }
@@ -344,7 +345,7 @@ export default function MotionAnimatorOriginalShell({handoff,onReturnToStudio}:P
   const durationSecs=doc?motionTimeToSeconds(doc.duration):handoff.clipDurationSecs;
   const totalFrames=Math.max(1,Math.round(durationSecs*fps));
   const localSecs=currentFrame/fps;
-  const frameState=doc?bridge.evaluate(bridge.clipLocalTime(localSecs)):null;
+  const frameState=doc?evaluateMotionDocument(doc,localSecs):null;
   const tracks=useMemo(()=>doc?docToTracks(doc):[],[doc?.updatedAt,doc?.id]);
   const selected=doc&&selectedId?doc.objects[selectedId]??null:null;
 
@@ -416,7 +417,7 @@ export default function MotionAnimatorOriginalShell({handoff,onReturnToStudio}:P
         <div className="flex-shrink-0 border-b border-border"><Transport playing={playing} currentFrame={currentFrame} totalFrames={totalFrames} fps={fps} onPlay={play} onStop={stop} onSeek={seek}/></div>
         {proPanel==='curve'&&<div className="flex-shrink-0 border-b border-border" style={{height:'32%'}}><KeyframePanel object={selected} fps={fps} totalFrames={totalFrames} currentFrame={currentFrame} kind="curve"/></div>}
         {proPanel==='dopesheet'&&<div className="flex-shrink-0 border-b border-border" style={{height:'32%'}}><KeyframePanel object={selected} fps={fps} totalFrames={totalFrames} currentFrame={currentFrame} kind="dope"/></div>}
-        {proPanel==='protools'&&<div className="flex-shrink-0 border-b border-border p-3 bg-[#0a0a0f]" style={{height:'32%'}}><div className="h-full border border-border rounded-xl grid grid-cols-3 gap-3 p-3 text-xs"><div className="border border-border/50 rounded-lg p-3"><div className="font-semibold">Direct Manipulation</div><div className="text-muted-foreground mt-2">Canonical draft → one commit path active.</div></div><div className="border border-border/50 rounded-lg p-3"><div className="font-semibold">Relations</div><div className="text-muted-foreground mt-2">{doc.rigs.length} rigs in document.</div></div><div className="border border-border/50 rounded-lg p-3"><div className="font-semibold">Signals</div><div className="text-muted-foreground mt-2">{Object.keys(doc.signals).length} signal bindings/resources.</div></div></div></div>}
+        {proPanel==='protools'&&<div className="flex-shrink-0 border-b border-border p-3 bg-[#0a0a0f]" style={{height:'32%'}}><div className="h-full border border-border rounded-xl grid grid-cols-3 gap-3 p-3 text-xs"><div className="border border-border/50 rounded-lg p-3"><div className="font-semibold">Direct Manipulation</div><div className="text-muted-foreground mt-2">Canonical draft → one commit path active.</div></div><div className="border border-border/50 rounded-lg p-3"><div className="font-semibold">Relations</div><div className="text-muted-foreground mt-2">{doc.rigs?.length ?? 0} rigs in document.</div></div><div className="border border-border/50 rounded-lg p-3"><div className="font-semibold">Signals</div><div className="text-muted-foreground mt-2">{Object.keys(doc.signals).length} signal bindings/resources.</div></div></div></div>}
         <div className="flex-1 overflow-hidden"><AnimatorTimeline tracks={tracks} selectedId={selectedId} onSelect={setSelectedId} currentFrame={currentFrame} totalFrames={totalFrames} fps={fps}/></div>
         {showTrace&&<div className="flex-shrink-0 border-t border-border" style={{height:'18%'}}><TraceStrip doc={doc}/></div>}
       </div>

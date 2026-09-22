@@ -440,7 +440,6 @@ export default function AiPanel({
                         alignItems: 'center',
                         gap: '8px',
                         padding: '5px 10px',
-                        borderBottom: '1px solid var(--color-border)',
                         width: '100%',
                         background: 'transparent',
                         border: 'none',

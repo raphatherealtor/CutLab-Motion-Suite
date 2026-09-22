@@ -6,6 +6,8 @@
  */
 
 import type { Effect, EffectType } from './schema';
+
+export type { EffectType };
 import { generateId } from './schema';
 import type { OpEnvelope } from './operations';
 import { makeOp } from './operations';

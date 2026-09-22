@@ -85,7 +85,7 @@ export default function MotionAnimator({ documentId, clipId, onClose }: MotionAn
   const commitTransaction = useCallback((tx: MotionTransaction) => {
     const ops = [
       makeOp(
-        'motion.document.patch' as any,
+        'motion.document.patch',
         { documentId, transaction: tx },
         'user'
       ),
@@ -105,6 +105,7 @@ export default function MotionAnimator({ documentId, clipId, onClose }: MotionAn
       depth: Object.keys(doc.objects).length,
       transform: { ...DEFAULT_MOTION_TRANSFORM },
       keyframes: [],
+      behaviors: [],
       masks: [],
       blendMode: 'normal',
       visible: true,
@@ -247,7 +248,7 @@ export default function MotionAnimator({ documentId, clipId, onClose }: MotionAn
           {activePanel === 'graph' && (
             <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
               {selectedObj ? (
-                <GraphEditor obj={selectedObj} localTimeSecs={localTimeSecs} onAddKeyframe={handleAddKeyframe} />
+                <GraphEditor obj={selectedObj} localTimeSecs={localTimeSecs} onAddKeyframe={(property, value) => handleAddKeyframe(selectedObj.id, property, value)} />
               ) : (
                 <div style={{ fontSize: '11px', color: 'var(--color-subtle)', textAlign: 'center', padding: '20px' }}>Select an object to edit keyframes</div>
               )}

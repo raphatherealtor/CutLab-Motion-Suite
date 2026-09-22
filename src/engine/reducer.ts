@@ -831,7 +831,7 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
     }
 
     // ── Motion Documents ─────────────────────────────────────
-    case 'motion.document.patch' as any: {
+    case 'motion.document.patch': {
       const docId: string = p.documentId;
       const tx: MotionTransaction = p.transaction;
       const existing = state.motionDocuments?.[docId];
@@ -842,8 +842,8 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
         motionDocuments: { ...(state.motionDocuments ?? {}), [docId]: updated },
       };
     }
-    case 'motion.document.register' as any:
-    case 'motionDocument.upsert' as any: {
+    case 'motion.document.register':
+    case 'motionDocument.upsert': {
       // Support both op types for compatibility
       // motion.document.register: payload = { document: MotionDocument }
       // motionDocument.upsert: payload = { resource: { id, documentJson, ... } } (legacy)
@@ -870,7 +870,7 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
       }
       return state;
     }
-    case 'motion.document.remove' as any: {
+    case 'motion.document.remove': {
       const { [p.documentId]: _rm, ...rest } = state.motionDocuments ?? {};
       return { ...state, motionDocuments: rest };
     }

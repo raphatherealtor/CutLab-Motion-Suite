@@ -10,6 +10,7 @@ import type {
   TranscriptWord, Transition, Precomp, SemanticCue, Mask
 } from './schema';
 import type { RationalTime } from './time';
+import type { MotionDocument, MotionTransaction } from './motion-document';
 import { generateId } from './schema';
 
 // ── Operation envelope ────────────────────────────────────────
@@ -55,6 +56,10 @@ export type OpType =
   | 'cue.upsert' | 'cue.remove'
   // Versions
   | 'version.create' | 'version.restore'
+  // Motion documents — canonical MotionDocuments stored in ProjectData.motionDocuments
+  | 'motion.document.register' | 'motion.document.patch' | 'motion.document.remove'
+  /** @deprecated legacy alias for motion.document.register (accepted by reducer, compared by e2e) */
+  | 'motionDocument.upsert'
   // Settings
   | 'settings.patch'
   // Session-only (never increment revision)
@@ -84,6 +89,8 @@ export type OpPayload =
   | GraphicPlacePayload | GraphicSetParamPayload | GraphicSetTypePayload
   | CueUpsertPayload | CueRemovePayload
   | VersionCreatePayload | VersionRestorePayload
+  | MotionDocumentRegisterPayload | MotionDocumentPatchPayload | MotionDocumentRemovePayload
+  | LegacyMotionDocumentUpsertPayload
   | SettingsPatchPayload
   | PlayheadSetPayload | SourceMonitorSetPayload;
 
@@ -176,6 +183,16 @@ export interface CueRemovePayload { sequenceId: string; cueId: string }
 // Version payloads
 export interface VersionCreatePayload { label: string; snapshotJson: string }
 export interface VersionRestorePayload { versionId: string; snapshotJson: string }
+
+// Motion document payloads — the ONE canonical path for Motion edits into Studio history.
+// A MotionTransaction is packed as a single op so one AI/manual Motion edit = one history entry.
+export interface MotionDocumentRegisterPayload { document: MotionDocument }
+export interface MotionDocumentPatchPayload { documentId: string; transaction: MotionTransaction }
+export interface MotionDocumentRemovePayload { documentId: string }
+/** @deprecated legacy resource-shaped payload accepted by the reducer for old saves/scripts */
+export interface LegacyMotionDocumentUpsertPayload {
+  resource: { id: string; documentJson?: string; [key: string]: unknown };
+}
 
 // Settings payloads
 export interface SettingsPatchPayload { settings: Partial<import('./schema').ProjectSettings> }

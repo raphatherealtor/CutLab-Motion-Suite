@@ -72,10 +72,14 @@ export interface MotionMask {
 export interface MotionMaterial {
   id: string;
   name: string;
-  type: 'solid' | 'gradient' | 'image' | 'neon' | 'glass' | 'shadow' | 'projector';
+  type: 'solid' | 'gradient' | 'image' | 'neon' | 'glass' | 'shadow' | 'projector' | 'metal';
   color?: string;
   gradientStops?: Array<{ offset: number; color: string }>;
   gradientAngle?: number;
+  /** Material-level opacity 0..1 */
+  opacity?: number;
+  /** Free-form treatment params (style, shadow, projector, procedural…) */
+  params?: Record<string, number | string | boolean>;
   /** Asset ref for image material */
   assetRef?: string;
   /** Neon glow params */
@@ -180,10 +184,16 @@ export interface MotionObject {
   /** Procedural treatments */
   proceduralType?: 'noise' | 'gradient-wipe' | 'particle' | 'wave' | 'ripple';
   proceduralParams?: Record<string, number | string | boolean>;
-  /** Children (for groups) */
+  /** For group objects */
   childIds?: string[];
   /** Signals binding: property → signal id */
   signalBindings?: Record<string, string>;
+  /** Whether this object casts/receives occlusion (subject-relative composition) */
+  occlusionRole?: 'subject' | 'foreground' | 'background' | 'none';
+  /** Subject tracking resource reference */
+  subjectRef?: string;
+  /** Tags for search/organization */
+  tags?: string[];
   /**
    * @deprecated Legacy compat only — DO NOT write new data here.
    * Loaded from old saves and migrated to behaviors[] on first read.
@@ -215,6 +225,29 @@ export interface MotionSignal {
   expression?: string;
 }
 
+// ── Rig / Relation (canonical) ───────────────────────────────
+
+export type MotionRigType =
+  | 'parent-child' | 'look-at' | 'path-follow' | 'expression' | 'spring-constraint' | 'aim-constraint' | 'position-constraint';
+
+export interface MotionRig {
+  id: string;
+  type: MotionRigType;
+  sourceObjectId: string;
+  targetObjectId: string;
+  params: Record<string, number | string | boolean>;
+}
+
+/** Contribution trace for AI/diagnostics — who changed what, when. */
+export interface MotionContributionTrace {
+  entries: Array<{
+    timestamp: number;
+    actor: string;
+    description: string;
+    opsApplied: number;
+  }>;
+}
+
 export interface MotionDocument {
   id: string;
   name: string;
@@ -236,6 +269,18 @@ export interface MotionDocument {
   activeCameraId?: string;
   /** Signals */
   signals: Record<string, MotionSignal>;
+  /** Rigs / relations (canonical since schema v2) */
+  rigs?: MotionRig[];
+  /** Schema version of this document (informational; optional for pre-v2 saves) */
+  schemaVersion?: number;
+  /** Template generator ID if created from template */
+  templateId?: string;
+  /** Template parameters used at creation */
+  templateParams?: Record<string, string | number | boolean>;
+  /** SVG source if imported */
+  svgSource?: string;
+  /** Contribution trace for AI/diagnostics */
+  contributionTrace?: MotionContributionTrace;
   /** Background color */
   backgroundColor?: string;
   /** Created/updated */
@@ -246,12 +291,21 @@ export interface MotionDocument {
 // ── MotionOp types ────────────────────────────────────────────
 
 export type MotionOpType =
-  | 'motion.object.add' |'motion.object.remove' |'motion.object.setProps' |'motion.object.setTransform' |'motion.object.reorder' |'motion.object.reparent' |'motion.keyframe.upsert' |'motion.keyframe.remove' |'motion.keyframe.move' |'motion.keyframe.setEasing' |'motion.behavior.upsert' |'motion.behavior.remove' |'motion.material.upsert' |'motion.material.remove' |'motion.camera.upsert' |'motion.camera.remove' |'motion.camera.setActive' |'motion.signal.upsert' |'motion.signal.remove' |'motion.document.setProps' |'motion.mask.upsert' |'motion.mask.remove' |'motion.textSegment.upsert' |'motion.textSegment.remove';
+  | 'motion.object.add' |'motion.object.remove' |'motion.object.setProps' |'motion.object.setTransform' |'motion.object.reorder' |'motion.object.reparent' |'motion.keyframe.upsert' |'motion.keyframe.remove' |'motion.keyframe.move' |'motion.keyframe.setEasing' |'motion.behavior.upsert' |'motion.behavior.remove' |'motion.behavior.setParam' |'motion.material.upsert' |'motion.material.remove' |'motion.material.assign' |'motion.camera.upsert' |'motion.camera.remove' |'motion.camera.setActive' |'motion.signal.upsert' |'motion.signal.remove' |'motion.document.setProps' |'motion.mask.upsert' |'motion.mask.remove' |'motion.mask.setProps' |'motion.textSegment.upsert' |'motion.textSegment.remove';
 
 export interface MotionOp {
-  type: MotionOpType;
+  /**
+   * Canonical op type. The `(string & {})` union keeps editor autocomplete for
+   * known types while allowing legacy alias types (motion.addObject, …) that
+   * normalizeMotionOpType maps onto canonical types at apply time.
+   */
+  type: MotionOpType | (string & {});
   documentId: string;
   payload: Record<string, unknown>;
+  /** Provenance — present on ops produced by the AI operator / packages / templates */
+  opId?: string;
+  actor?: 'user' | 'ai' | 'system' | 'template';
+  createdAt?: number;
 }
 
 export interface MotionTransaction {
@@ -474,10 +528,40 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
         },
       };
     }
+    case 'motion.behavior.setParam': {
+      // Set one param on an existing behavior — canonical target of the
+      // legacy 'motion.setBehaviorParam' alias.
+      const obj = doc.objects[p.objectId];
+      if (!obj) return doc;
+      return {
+        ...doc,
+        objects: {
+          ...doc.objects,
+          [p.objectId]: {
+            ...obj,
+            behaviors: (obj.behaviors ?? []).map((b) =>
+              b.id === p.behaviorId ? { ...b, params: { ...b.params, [p.key]: p.value } } : b
+            ),
+          },
+        },
+      };
+    }
     case 'motion.material.upsert': {
       return {
         ...doc,
         materials: { ...doc.materials, [p.material.id]: p.material },
+      };
+    }
+    case 'motion.material.assign': {
+      // Upsert the material into the library AND assign it to the object.
+      // Canonical target of the legacy 'motion.setMaterial' alias.
+      const obj = doc.objects[p.objectId];
+      const material = p.material as MotionMaterial | undefined;
+      if (!obj || !material) return doc;
+      return {
+        ...doc,
+        materials: { ...doc.materials, [material.id]: material },
+        objects: { ...doc.objects, [p.objectId]: { ...obj, materialId: material.id } },
       };
     }
     case 'motion.material.remove': {
@@ -508,6 +592,9 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
       return { ...doc, signals: rest };
     }
     case 'motion.document.setProps': {
+      // Legacy 'motion.upsertDocument' passes { document } (template instantiation);
+      // canonical setProps passes { props }.
+      if (p.document) return { ...doc, ...p.document, updatedAt: Date.now() };
       return { ...doc, ...p.props };
     }
     case 'motion.mask.upsert': {
@@ -534,6 +621,21 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
         objects: {
           ...doc.objects,
           [p.objectId]: { ...obj, masks: obj.masks.filter((m) => m.id !== p.maskId) },
+        },
+      };
+    }
+    case 'motion.mask.setProps': {
+      // Patch one existing mask — canonical target of the legacy 'motion.setMask' alias.
+      const obj = doc.objects[p.objectId];
+      if (!obj) return doc;
+      return {
+        ...doc,
+        objects: {
+          ...doc.objects,
+          [p.objectId]: {
+            ...obj,
+            masks: obj.masks.map((m) => (m.id === p.maskId ? { ...m, ...p.props } : m)),
+          },
         },
       };
     }
@@ -583,10 +685,10 @@ function normalizeMotionOpType(type: string): MotionOpType {
     'motion.reorderObjects': 'motion.object.reorder',
     'motion.upsertKeyframe': 'motion.keyframe.upsert',
     'motion.removeKeyframe': 'motion.keyframe.remove',
-    'motion.setMaterial': 'motion.material.upsert',
+    'motion.setMaterial': 'motion.material.assign',
     'motion.addMask': 'motion.mask.upsert',
     'motion.removeMask': 'motion.mask.remove',
-    'motion.setMask': 'motion.mask.upsert',
+    'motion.setMask': 'motion.mask.setProps',
     'motion.upsertSignal': 'motion.signal.upsert',
     'motion.removeSignal': 'motion.signal.remove',
     'motion.setDocumentProp': 'motion.document.setProps',
@@ -596,8 +698,10 @@ function normalizeMotionOpType(type: string): MotionOpType {
     // Canonical behavior ops from panels
     'motion.addBehavior': 'motion.behavior.upsert',
     'motion.removeBehavior': 'motion.behavior.remove',
-    'motion.setBehaviorParam': 'motion.behavior.upsert',
+    'motion.setBehaviorParam': 'motion.behavior.setParam',
     'motion.upsertBehavior': 'motion.behavior.upsert',
+    // Short-form alias used by e2e suites
+    'document.setProps': 'motion.document.setProps',
   };
   return (aliases[type] ?? type) as MotionOpType;
 }
@@ -628,7 +732,7 @@ export function motionTransactionToStudioOps(
   // The reducer applies it atomically to the MotionDocument stored in project.motionDocuments
   return [
     makeOp(
-      'motion.document.patch' as any,
+      'motion.document.patch',
       { documentId, transaction: tx },
       'user'
     ),
@@ -865,6 +969,9 @@ export function applyMotionBehaviors(
         else if (prop === 'scaleY' || prop === 'scale.y') result = { ...result, scaleY: result.scaleY * reactiveVal };
         else if (prop === 'opacity') result = { ...result, opacity: result.opacity * reactiveVal };
         else if (prop === 'rotationZ' || prop === 'rotation.z') result = { ...result, rotationZ: result.rotationZ + reactiveVal };
+        else if (prop === 'x' || prop === 'position.x') result = { ...result, x: result.x + reactiveVal };
+        else if (prop === 'y' || prop === 'position.y') result = { ...result, y: result.y + reactiveVal };
+        else if (prop === 'z' || prop === 'position.z') result = { ...result, z: result.z + reactiveVal };
         break;
       }
       case 'bounce-in': {

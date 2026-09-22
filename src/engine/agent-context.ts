@@ -333,17 +333,88 @@ export function routeNaturalLanguage(input: string): AgentRoute {
   };
 }
 
-function buildMotionAgentContext(...args: any[]): any {
-  // eslint-disable-next-line no-console
-  console.warn('Placeholder: buildMotionAgentContext is not implemented yet.', args);
-  return null;
+// ── Motion Agent Context ──────────────────────────────────────
+
+/**
+ * Constrained Motion-layer context for the AI Creative Operator.
+ * Derived from the canonical ProjectData — no shadow copies, no private state.
+ */
+export interface MotionAgentContext {
+  playheadFrame: number;
+  playheadSecs: number;
+  selectedClipIds: string[];
+  /** Every MotionDocument in the project, summarized */
+  documents: Array<{
+    id: string;
+    name: string;
+    /** Studio clip(s) referencing this document */
+    clipIds: string[];
+    objectCount: number;
+    textObjectCount: number;
+    signalIds: string[];
+    behaviorTypes: string[];
+  }>;
+  /** Document bound to the first selected motion clip, if any */
+  activeDocumentId?: string;
+  /** Selected motion object within the active document */
+  activeObjectId?: string;
+  revision: number;
 }
 
-export { buildMotionAgentContext };
-function MotionAgentContext(...args: any[]): any {
-  // eslint-disable-next-line no-console
-  console.warn('Placeholder: MotionAgentContext is not implemented yet.', args);
-  return null;
-}
+/**
+ * Build Motion-layer agent context from canonical project state.
+ * Reads ONLY ProjectData — the same truth the manual Animator uses.
+ */
+export function buildMotionAgentContext(
+  project: ProjectData,
+  playheadFrame: number,
+  selectedClipIds: string[]
+): MotionAgentContext {
+  const seq = project.sequences[project.activeSequenceId];
+  const fps = seq?.format.fps ?? 29.97;
+  const playheadSecs = playheadFrame / fps;
 
-export { MotionAgentContext };
+  // Map documentId → referencing clip ids (canonical Clip.motionDocumentId, legacy motionBundleId)
+  const clipsByDoc = new Map<string, string[]>();
+  for (const clip of seq?.clips ?? []) {
+    const docId = clip.motionDocumentId ?? clip.motionBundleId;
+    if (!docId) continue;
+    const arr = clipsByDoc.get(docId) ?? [];
+    arr.push(clip.id);
+    clipsByDoc.set(docId, arr);
+  }
+
+  const documents = Object.values(project.motionDocuments ?? {}).map((doc) => {
+    const objects = Object.values(doc.objects ?? {});
+    return {
+      id: doc.id,
+      name: doc.name,
+      clipIds: clipsByDoc.get(doc.id) ?? [],
+      objectCount: objects.length,
+      textObjectCount: objects.filter((o) => o.kind === 'text').length,
+      signalIds: Object.keys(doc.signals ?? {}),
+      behaviorTypes: Array.from(new Set(objects.flatMap((o) => (o.behaviors ?? []).map((b) => b.type)))),
+    };
+  });
+
+  // Active document = document of the first selected motion clip
+  let activeDocumentId: string | undefined;
+  for (const clipId of selectedClipIds) {
+    const clip = seq?.clips.find((c) => c.id === clipId);
+    const docId = clip?.motionDocumentId ?? clip?.motionBundleId;
+    if (docId && project.motionDocuments?.[docId]) {
+      activeDocumentId = docId;
+      break;
+    }
+  }
+
+  return {
+    playheadFrame,
+    playheadSecs,
+    selectedClipIds,
+    documents,
+    activeDocumentId,
+    activeObjectId: undefined, // motion-object selection lives in the Animator session, not the project
+    revision: project.revision,
+  };
+}

@@ -129,29 +129,23 @@ export interface MotionObjectState {
 }
 
 /**
- * Evaluate a motion clip at Studio sequence time.
- * Returns a FrameState for inspector/preview use.
+ * Evaluate a whole MotionDocument at clip-local time (no Studio clip required).
+ * Used by the AI Creative Operator preview and any document-level inspection.
+ * Returns a FrameState for preview/inspector use.
  */
-export function evaluateMotionClip(
-  project: ProjectData,
-  clip: Clip,
-  sequenceTimeSecs: number,
+export function evaluateMotionDocument(
+  doc: MotionDocument,
+  localTimeSecs: number,
   signalValues: Record<string, number> = {}
-): FrameState | null {
-  const docId = clip.motionDocumentId ?? clip.motionBundleId;
-  if (!docId) return null;
-  const doc = project.motionDocuments?.[docId];
-  if (!doc) return null;
-
-  const clipStartSecs = toSeconds(clip.startTime);
-  const clipDurSecs = toSeconds(clip.duration);
-  const localTimeSecs = Math.max(0, Math.min(clipDurSecs, sequenceTimeSecs - clipStartSecs));
-  const tau = clipDurSecs > 0 ? localTimeSecs / clipDurSecs : 0;
+): FrameState {
+  const durationSecs = motionTimeToSeconds(doc.duration);
+  const clampedSecs = Math.max(0, Math.min(durationSecs, localTimeSecs));
+  const tau = durationSecs > 0 ? clampedSecs / durationSecs : 0;
 
   const startTime = performance.now();
 
   // Evaluate signals from doc
-  const docSignalValues = { ...evaluateSignals(doc, localTimeSecs), ...signalValues };
+  const docSignalValues = { ...evaluateSignals(doc, clampedSecs), ...signalValues };
 
   const objects: MotionObjectState[] = [];
   let keyframeCount = 0;
@@ -161,7 +155,7 @@ export function evaluateMotionClip(
     const obj = doc.objects[objId];
     if (!obj || !obj.visible) continue;
 
-    const worldTransform = evaluateMotionTransform(obj, localTimeSecs, docSignalValues);
+    const worldTransform = evaluateMotionTransform(obj, clampedSecs, docSignalValues);
     keyframeCount += obj.keyframes?.length ?? 0;
     behaviorCount += obj.behaviors?.length ?? 0;
 
@@ -180,7 +174,7 @@ export function evaluateMotionClip(
   }
 
   return {
-    localTimeSecs,
+    localTimeSecs: clampedSecs,
     tau,
     objects,
     signalValues: docSignalValues,
@@ -194,4 +188,26 @@ export function evaluateMotionClip(
       errors: [],
     },
   };
+}
+
+/**
+ * Evaluate a motion clip at Studio sequence time.
+ * Returns a FrameState for inspector/preview use.
+ */
+export function evaluateMotionClip(
+  project: ProjectData,
+  clip: Clip,
+  sequenceTimeSecs: number,
+  signalValues: Record<string, number> = {}
+): FrameState | null {
+  const docId = clip.motionDocumentId ?? clip.motionBundleId;
+  if (!docId) return null;
+  const doc = project.motionDocuments?.[docId];
+  if (!doc) return null;
+
+  const clipStartSecs = toSeconds(clip.startTime);
+  const clipDurSecs = toSeconds(clip.duration);
+  const localTimeSecs = Math.max(0, Math.min(clipDurSecs, sequenceTimeSecs - clipStartSecs));
+
+  return evaluateMotionDocument(doc, localTimeSecs, signalValues);
 }

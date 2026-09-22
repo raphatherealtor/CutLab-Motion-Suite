@@ -139,7 +139,30 @@ export function deserializeProject(json: string): ProjectData {
   // Apply schema migration
   const migrated = migrateProject(raw);
   // Migrate legacy graphicParams._behaviors → canonical behaviors[] in all MotionDocuments
-  return migrateAllMotionDocumentBehaviors(migrated);
+  const behaviorMigrated = migrateAllMotionDocumentBehaviors(migrated);
+  // Runtime media handles (blob URLs) are never persisted — on reopen every asset
+  // without a runtime handle is honestly MISSING until relinked. Stable asset IDs,
+  // sourceRefs, transcripts, and MotionDocuments are preserved untouched.
+  return markUnlinkedAssetsMissing(behaviorMigrated);
+}
+
+/**
+ * Assets without a runtime URL have no playable media in this session.
+ * Marks them missing (reversible per-asset via the canonical `asset.relink` op,
+ * which restores runtimeUrl without replacing the asset id or MotionDocuments).
+ */
+function markUnlinkedAssetsMissing(project: ProjectData): ProjectData {
+  let changed = false;
+  const assets: ProjectData['assets'] = {};
+  for (const [id, asset] of Object.entries(project.assets)) {
+    if (!asset.runtimeUrl && asset.caste !== 'missing' && asset.caste !== 'stub' && asset.caste !== 'failed') {
+      assets[id] = { ...asset, caste: 'missing' };
+      changed = true;
+    } else {
+      assets[id] = asset;
+    }
+  }
+  return changed ? { ...project, assets } : project;
 }
 
 /**

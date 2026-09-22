@@ -86,14 +86,14 @@ export default function AICreativeOperatorPanel({
   // Build workspace context
   const buildContext = useCallback((): AIWorkspaceContext => {
     const contract = buildAnalysisContract(project, seq ?? null, session.playheadFrame);
-    const motionContext = buildMotionAgentContext(project, session.playheadFrame, session.selectedClipIds);
+    const motionContext = buildMotionAgentContext(project, session.playheadFrame, Array.from(session.selectedClipIds));
 
     if (workspaceKind === 'motion-animator' && motionHandoff) {
       let doc = resolveMotionDocument(project, motionHandoff.motionDocumentId);
       return {
         workspace: 'motion-animator',
         motionDocument: doc!,
-        selectedObjectId: session.workspace?.motionAnimatorSelectedObjectId ?? undefined,
+        selectedObjectId: motionHandoff.selectedMotionObjectId ?? undefined,
         objectCount: doc ? Object.keys(doc.objects).length : 0,
         textObjectCount: doc ? Object.values(doc.objects).filter((o) => o.kind === 'text').length : 0,
         availableSignals: Object.keys(doc?.signals ?? {}),

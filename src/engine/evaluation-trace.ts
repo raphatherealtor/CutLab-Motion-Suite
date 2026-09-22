@@ -10,8 +10,9 @@
  * - CONTRIBUTORS: choreography, behavior, signal binding, semantic trigger, macro, camera, subject
  */
 
-import type { MotionObject, FrameState } from '@/motion/types';
-import { motionTimeToSeconds } from '@/motion/types';
+import type { MotionObject } from './motion-document';
+import type { FrameState } from './motion-document-utils';
+import { motionTimeToSeconds } from './motion-document-utils';
 
 // ── Contribution Types ────────────────────────────────────────
 
@@ -127,7 +128,7 @@ export function buildEvaluationTrace(
   };
 
   // Check active behaviors
-  for (const beh of obj.behaviors) {
+  for (const beh of obj.behaviors ?? []) {
     const behStart = motionTimeToSeconds(beh.startTime);
     const behEnd = behStart + motionTimeToSeconds(beh.duration);
     const isActive = timeSecs >= behStart && timeSecs <= behEnd;
@@ -211,28 +212,28 @@ export function buildEvaluationTrace(
 
   // Build value traces for key properties
   const valueTraces: ValueTrace[] = [
-    buildValueTrace('position.x', obj.transform.position.x, contributions),
-    buildValueTrace('position.y', obj.transform.position.y, contributions),
-    buildValueTrace('position.z', obj.transform.position.z, contributions),
+    buildValueTrace('position.x', obj.transform.x, contributions),
+    buildValueTrace('position.y', obj.transform.y, contributions),
+    buildValueTrace('position.z', obj.transform.z, contributions),
     buildValueTrace('opacity', obj.transform.opacity, contributions),
-    buildValueTrace('scale', obj.transform.scale.x, contributions),
+    buildValueTrace('scale', obj.transform.scaleX, contributions),
   ];
 
   // Space trace
   const spaceTrace: SpaceTrace = {
     localTransform: {
-      x: obj.transform.position.x,
-      y: obj.transform.position.y,
-      z: obj.transform.position.z,
-      scaleX: obj.transform.scale.x,
-      scaleY: obj.transform.scale.y,
-      rotation: obj.transform.rotation.z,
+      x: obj.transform.x,
+      y: obj.transform.y,
+      z: obj.transform.z,
+      scaleX: obj.transform.scaleX,
+      scaleY: obj.transform.scaleY,
+      rotation: obj.transform.rotationZ,
     },
     depthDisplacement: obj.depth * 100,
     worldPosition: {
-      x: obj.transform.position.x,
-      y: obj.transform.position.y,
-      z: obj.transform.position.z + obj.depth * 100,
+      x: obj.transform.x,
+      y: obj.transform.y,
+      z: obj.transform.z + obj.depth * 100,
     },
   };
 
