@@ -22,7 +22,7 @@ import type { MotionOp, MotionDocument } from './motion-document';
 import { applyMotionTransaction } from './motion-document';
 import { evaluateMotionDocument, generateMotionId, type FrameState } from './motion-document-utils';
 import type { StudioAnalysisContract } from './analysis-contract';
-import type { MotionAgentContext } from './agent-context';
+import { MotionAgentContext } from './agent-context';
 
 import { findCompatiblePackages } from './motion-package';
 
@@ -70,7 +70,7 @@ export interface AIMotionAnimatorContext {
   /** Analysis contract */
   analysis: StudioAnalysisContract;
   /** Motion agent context */
-  motionContext: MotionAgentContext;
+  motionContext: ReturnType<typeof MotionAgentContext>;
 }
 
 export type AIWorkspaceContext = AIStudioContext | AIMotionAnimatorContext;
