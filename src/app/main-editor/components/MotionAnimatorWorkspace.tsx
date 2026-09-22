@@ -19,6 +19,8 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useEngine } from '@/engine/store';
 import {
   motionTransactionToStudioOps,
+  type MotionOpLike,
+  type MotionTransactionLike,
 } from '@/engine/motion-bridge';
 import type { WorkspaceHandoff } from '@/engine/workspace-context';
 import { buildReturnHandoff } from '@/engine/workspace-context';
@@ -36,7 +38,6 @@ import {
   generateMotionId,
   resolveMotionDocument,
   evaluateMotionClip,
-  createMotionTransaction,
   makeOp,
   type FrameState,
 } from '@/engine/motion-document-utils';
@@ -1163,12 +1164,13 @@ export default function MotionAnimatorWorkspace({
   }, [playing, doc?.fps, doc?.duration]);
 
   // THE ONE commit path: MotionOp[] → MotionTransaction → Studio dispatchBatch
-  // makeOp here is the motion-document-utils makeOp (creates MotionOps)
-  // motionTransactionToStudioOps converts them to Studio OpEnvelopes
+  // Accepts MotionOpLike (canonical MotionOp OR legacy motion/types.ts MotionOp)
+  // — both flow through motionTransactionToStudioOps, which packs them into one
+  // motion.document.patch op → one Studio history entry.
   const applyOps = useCallback(
-    (ops: ReturnType<typeof makeOp>[], description: string) => {
+    (ops: MotionOpLike[], description: string) => {
       if (!project || !doc) return;
-      const transaction = createMotionTransaction(description, ops);
+      const transaction: MotionTransactionLike = { ops, description };
       // motionTransactionToStudioOps(tx, project) → Studio OpEnvelopes
       const studioOps = motionTransactionToStudioOps(transaction, project);
       if (studioOps.length > 0) {

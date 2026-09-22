@@ -128,21 +128,27 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
     const targetObj = rootObjs[0];
     if (!targetObj) return;
 
-    const existingSig = Object.values(doc.signals).find((s) => s.name === starter.source);
+    // Canonical identity: signals are matched by `kind`, the canonical
+    // optional channel id (preserved by the legacy→canonical conversion seam
+    // and set on every signal this panel creates) — never by record key guess.
+    const existingSig = Object.values(doc.signals).find((s) => s.kind === starter.source);
     const sigId = existingSig?.id ?? generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
     if (!existingSig) {
+      // Canonical MotionSignal shape — the reducer stores this as-is into
+      // ProjectData.motionDocuments[doc.id].signals[sigId].
       const signal: MotionSignal = {
         id: sigId,
-        name: starter.source,
+        kind: starter.source,
+        name: SIGNAL_SOURCES.find((s) => s.kind === starter.source)?.label ?? starter.source,
         type: 'number',
         defaultValue: 0,
       };
       ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal }));
     }
 
-    // Handle camera pulse specially
+    // Handle camera pulse specially — canonical docs keep cameras in a record
     if (starter.id === 'camera-pulse') {
       const activeCam = doc.activeCameraId ? doc.cameras[doc.activeCameraId] : undefined;
       if (!activeCam) {
@@ -176,14 +182,15 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
     const targetObj = selectedObjectId ? doc.objects[selectedObjectId] : rootObjs[0];
     if (!targetObj) return;
 
-    const existingSig = Object.values(doc.signals).find((s) => s.name === selectedSource);
+    const existingSig = Object.values(doc.signals).find((s) => s.kind === selectedSource);
     const sigId = existingSig?.id ?? generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
     if (!existingSig) {
       const signal: MotionSignal = {
         id: sigId,
-        name: selectedSource,
+        kind: selectedSource,
+        name: SIGNAL_SOURCES.find((s) => s.kind === selectedSource)?.label ?? selectedSource,
         type: 'number',
         defaultValue: 0,
       };
@@ -330,7 +337,9 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
                   {allBindings.length} active binding{allBindings.length !== 1 ? 's' : ''}. All are visible and removable.
                 </div>
                 {allBindings.map(({ obj, behavior, signal }) => {
-                  const sourceInfo = SIGNAL_SOURCES.find((s) => s.kind === signal?.name);
+                  // Panel-created signals carry the channel id in `kind`;
+                  // older name-keyed signals fall back to name matching.
+                  const sourceInfo = SIGNAL_SOURCES.find((s) => s.kind === (signal?.kind ?? signal?.name));
                   const targetProp = behavior.params.property as string;
                   return (
                     <div
