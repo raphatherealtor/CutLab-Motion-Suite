@@ -76,25 +76,51 @@ async function exportViaMediaRecorder(
   const seq = project.sequences[project.activeSequenceId];
   if (!seq) return null;
 
-  const fps = preset.fps;
+  // Frame indices map to time via seq.format.fps (buildRenderPlan), so the capture
+  // rate and wall-clock cadence must use the sequence rate — not the preset's — or
+  // the rendered duration and A/V sync diverge when they differ.
+  const fps = seq.format.fps;
   const totalFrames = getSequenceDurationFrames(project);
   if (totalFrames === 0) return null;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = preset.width;
-  canvas.height = preset.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
+  // ── Render at sequence resolution, then scale into the preset canvas ──
+  // The compositor uses plan.width/height (sequence format) as its coordinate system.
+  // Rendering straight into a differently-sized preset canvas cropped/distorted the
+  // frame. Render natively, then blit to the capture canvas so the chosen export size
+  // is honored without changing compositor semantics.
+  const renderCanvas = document.createElement('canvas');
+  renderCanvas.width = seq.format.width;
+  renderCanvas.height = seq.format.height;
+  const renderCtx = renderCanvas.getContext('2d');
+  if (!renderCtx) return null;
+
+  const captureCanvas = document.createElement('canvas');
+  captureCanvas.width = preset.width;
+  captureCanvas.height = preset.height;
+  const captureCtx = captureCanvas.getContext('2d');
+  if (!captureCtx) return null;
+
+  const blitFrame = () => {
+    captureCtx.fillStyle = '#000';
+    captureCtx.fillRect(0, 0, preset.width, preset.height);
+    const scale = Math.min(preset.width / renderCanvas.width, preset.height / renderCanvas.height);
+    const dw = renderCanvas.width * scale;
+    const dh = renderCanvas.height * scale;
+    const dx = (preset.width - dw) / 2;
+    const dy = (preset.height - dh) / 2;
+    captureCtx.drawImage(renderCanvas, dx, dy, dw, dh);
+  };
 
   // ── Frame zero: render before recording begins ──
   // This ensures the recorder captures real content from the very first frame.
   const plan0 = buildRenderPlan(project, 0);
   if (plan0) {
-    await renderFrame(ctx, plan0, project, { playing: false });
+    await renderFrame(renderCtx, plan0, project, { playing: false });
   } else {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, preset.width, preset.height);
+    renderCtx.fillStyle = '#000';
+    renderCtx.fillRect(0, 0, renderCanvas.width, renderCanvas.height);
   }
+  blitFrame();
 
   // ── Set up audio: route to MediaStreamAudioDestinationNode, NOT speakers ──
   let audioStream: MediaStream | null = null;
@@ -118,7 +144,7 @@ async function exportViaMediaRecorder(
   }
 
   // ── Set up MediaRecorder with combined video + audio stream ──
-  const videoStream = canvas.captureStream(fps);
+  const videoStream = captureCanvas.captureStream(fps);
   const combinedStream = audioStream
     ? new MediaStream([...videoStream.getTracks(), ...audioStream.getTracks()])
     : videoStream;
@@ -142,21 +168,27 @@ async function exportViaMediaRecorder(
 
   onProgress(0.1, 'rendering');
 
-  // ── Render all frames through the canonical compositor ──
+  // ── Render all frames through the canonical compositor, wall-clock locked ──
+  // Audio plays in real time through the MediaStreamAudioDestination, so video frames
+  // must stay locked to the same origin; otherwise cumulative seek/render latency makes
+  // the audio finish before the video (A/V drift).
   const frameInterval = 1000 / fps;
+  const loopStart = performance.now();
   for (let f = 0; f < totalFrames; f++) {
     const plan = buildRenderPlan(project, f);
     if (plan) {
       // Same compositor as Studio Viewer — renders Motion objects, behaviors, signals, assets
-      await renderFrame(ctx, plan, project, { playing: false });
+      await renderFrame(renderCtx, plan, project, { playing: false });
     } else {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, preset.width, preset.height);
+      renderCtx.fillStyle = '#000';
+      renderCtx.fillRect(0, 0, renderCanvas.width, renderCanvas.height);
     }
+    blitFrame();
 
     onProgress(0.1 + (f / totalFrames) * 0.85, 'rendering');
-    // Wait one frame interval so MediaRecorder captures this canvas state
-    await new Promise((r) => setTimeout(r, frameInterval));
+    // Wait until the next frame's wall-clock target (skip if render ran long).
+    const waitMs = loopStart + (f + 1) * frameInterval - performance.now();
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
   }
 
   recorder.stop();

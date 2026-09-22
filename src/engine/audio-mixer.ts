@@ -28,14 +28,17 @@ export async function loadAudioBuffer(
   runtimeUrl: string,
   ctx: BaseAudioContext
 ): Promise<AudioBuffer | null> {
-  const cached = audioBufferCache.get(assetId);
+  // Key on asset + runtimeUrl so a relinked asset (same id, new blob URL) does not
+  // return a stale decoded buffer.
+  const cacheKey = `${assetId}::${runtimeUrl}`;
+  const cached = audioBufferCache.get(cacheKey);
   if (cached) return cached.buffer;
 
   try {
     const response = await fetch(runtimeUrl);
     const arrayBuffer = await response.arrayBuffer();
     const buffer = await ctx.decodeAudioData(arrayBuffer);
-    audioBufferCache.set(assetId, { buffer, assetId });
+    audioBufferCache.set(cacheKey, { buffer, assetId });
     return buffer;
   } catch (e) {
     console.warn('[cutlab-audio] failed to load audio buffer', assetId, e);
@@ -85,7 +88,6 @@ export class AudioPreviewEngine {
     this.startSeqTime = startSeqTimeSecs;
     this.playing = true;
 
-    const fps = seq.format.fps;
     const soloTracks = seq.tracks.filter((t) => t.solo && t.kind === 'audio');
     const hasSolo = soloTracks.length > 0;
 

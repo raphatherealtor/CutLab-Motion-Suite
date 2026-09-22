@@ -8,7 +8,6 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { PlaybackClock } from '@/engine/playback-clock';
 
 
 interface PlaybackClockOptions {
@@ -27,6 +26,7 @@ export class PlaybackClock {
   private onFrame: (frame: number) => void;
   private onStop: () => void;
   private rafId: number | null = null;
+  private lastFrame = -1;
 
   constructor(opts: PlaybackClockOptions) {
     this.fps = opts.fps;
@@ -38,6 +38,7 @@ export class PlaybackClock {
   arm(startFrame: number) {
     this.armed = true;
     this.startFrame = startFrame;
+    this.lastFrame = startFrame;
     this.startWallTime = performance.now();
     this.tick();
   }
@@ -63,7 +64,13 @@ export class PlaybackClock {
       return;
     }
 
-    this.onFrame(frame);
+    // Emit only when the frame index actually advances — rAF fires ~60Hz while the
+    // timeline runs at ~30fps, so emitting every tick caused redundant state updates
+    // and React re-renders with no new frame to show.
+    if (frame !== this.lastFrame) {
+      this.lastFrame = frame;
+      this.onFrame(frame);
+    }
     this.rafId = requestAnimationFrame(this.tick);
   };
 

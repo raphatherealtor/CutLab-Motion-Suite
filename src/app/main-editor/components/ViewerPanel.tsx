@@ -28,7 +28,6 @@ export default function ViewerPanel({ playback, onPlay, onSeek }: ViewerPanelPro
   const [aspect, setAspect] = useState<'16:9' | '9:16' | '1:1'>('16:9');
   const viewerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rafRef = useRef<number | null>(null);
   const isPlayingRef = useRef(false);
   const fps = activeSequence?.format.fps ?? 29.97;
   const totalFrames = playback.totalFrames || 300;
@@ -69,52 +68,29 @@ export default function ViewerPanel({ playback, onPlay, onSeek }: ViewerPanelPro
     await renderFrame(ctx, plan, project, { playing: isPlayingRef.current });
   }, [project]);
 
-  // Render on playhead change (scrubbing / static)
-  useEffect(() => {
-    if (!session.playing) {
-      renderCurrentFrame(session.playheadFrame);
-    }
-  }, [session.playheadFrame, session.playing, renderCurrentFrame]);
-
-  // Playback loop — render each frame as playback clock advances
+  // Keep the playing flag visible to renderCurrentFrame (memoized on project).
   useEffect(() => {
     isPlayingRef.current = session.playing;
+  }, [session.playing]);
 
+  // SINGLE render path. Render whenever the playhead moves, playback toggles, or the
+  // project changes (undo/redo). The playback clock is the only thing that advances the
+  // playhead — there is no second rAF/render loop here, so the frame drawn always
+  // corresponds to the current playhead instead of a stale first frame.
+  useEffect(() => {
+    renderCurrentFrame(session.playheadFrame);
+  }, [session.playheadFrame, session.playing, project.revision, renderCurrentFrame]);
+
+  // Start/pause real video elements when playback toggles. Audio preview is handled
+  // centrally by the engine store, so video + audio both key off the same state change.
+  useEffect(() => {
     if (session.playing) {
-      // Start video elements
       const plan = buildRenderPlan(project, session.playheadFrame);
       if (plan) startVideoPlayback(plan, project);
-
-      // rAF render loop
-      const loop = () => {
-        if (!isPlayingRef.current) return;
-        renderCurrentFrame(session.playheadFrame);
-        rafRef.current = requestAnimationFrame(loop);
-      };
-      rafRef.current = requestAnimationFrame(loop);
     } else {
-      // Pause video elements
       pauseVideoPlayback();
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
     }
-
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
   }, [session.playing]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Re-render when project changes (e.g. after undo/redo)
-  useEffect(() => {
-    if (!session.playing) {
-      renderCurrentFrame(session.playheadFrame);
-    }
-  }, [project.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Viewer direct manipulation
   const viewerDraftRef = useRef<{
