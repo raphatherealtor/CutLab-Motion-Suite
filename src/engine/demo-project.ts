@@ -490,6 +490,7 @@ export function createDemoProject(): ProjectData {
           opacity: transform.opacity ?? 1,
         },
         keyframes: [],
+        behaviors: [],
         masks: [],
         blendMode: regObj.blendMode || 'normal',
         visible: regObj.visible !== false,

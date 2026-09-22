@@ -57,6 +57,10 @@ export type OpType =
   | 'version.create' | 'version.restore'
   // Settings
   | 'settings.patch'
+  // Motion documents (canonical Motion round-trip — one mutation door)
+  | 'motion.document.register' | 'motion.document.patch' | 'motion.document.remove'
+  // Legacy Motion document op (kept for compatibility)
+  | 'motionDocument.upsert'
   // Session-only (never increment revision)
   | 'playhead.set' | 'sourceMonitor.set';
 
@@ -85,6 +89,8 @@ export type OpPayload =
   | CueUpsertPayload | CueRemovePayload
   | VersionCreatePayload | VersionRestorePayload
   | SettingsPatchPayload
+  | MotionDocumentRegisterPayload | MotionDocumentPatchPayload | MotionDocumentRemovePayload
+  | MotionDocumentUpsertLegacyPayload
   | PlayheadSetPayload | SourceMonitorSetPayload;
 
 // Asset payloads
@@ -179,6 +185,18 @@ export interface VersionRestorePayload { versionId: string; snapshotJson: string
 
 // Settings payloads
 export interface SettingsPatchPayload { settings: Partial<import('./schema').ProjectSettings> }
+
+// Motion document payloads (canonical Motion round-trip)
+export interface MotionDocumentRegisterPayload { document: import('./motion-document').MotionDocument }
+export interface MotionDocumentPatchPayload {
+  documentId: string;
+  transaction: import('./motion-document').MotionTransaction;
+}
+export interface MotionDocumentRemovePayload { documentId: string }
+/** Legacy: resource wrapper with documentJson */
+export interface MotionDocumentUpsertLegacyPayload {
+  resource: { id: string; documentJson?: string } & Record<string, unknown>;
+}
 
 // Session-only payloads
 export interface PlayheadSetPayload { frame: number }

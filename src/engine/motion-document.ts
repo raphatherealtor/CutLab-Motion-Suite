@@ -213,6 +213,8 @@ export interface MotionSignal {
   currentValue?: number | string | boolean;
   /** Expression driving this signal */
   expression?: string;
+  /** Legacy channel id (e.g. 'audio-beat') — retained for Motion Suite UI compatibility */
+  kind?: string;
 }
 
 export interface MotionDocument {
@@ -241,6 +243,36 @@ export interface MotionDocument {
   /** Created/updated */
   createdAt: number;
   updatedAt: number;
+  // ── Legacy-compat optional fields (read by legacy Motion Suite UI; never required) ──
+  /** Schema version (legacy Motion Suite) */
+  schemaVersion?: number;
+  /** Rigs / relations (legacy Motion Suite) */
+  rigs?: MotionRig[];
+  /** Template generator ID if created from a template */
+  templateId?: string;
+  /** Template parameters used at creation */
+  templateParams?: Record<string, string | number | boolean>;
+  /** Contribution trace for AI/diagnostics */
+  contributionTrace?: MotionContributionTrace;
+}
+
+/** Legacy rig/relation shape (from the Motion Suite UI). */
+export interface MotionRig {
+  id: string;
+  type: string;
+  sourceObjectId: string;
+  targetObjectId: string;
+  params: Record<string, number | string | boolean>;
+}
+
+/** Legacy contribution trace shape. */
+export interface MotionContributionTrace {
+  entries: Array<{
+    timestamp: number;
+    actor: string;
+    description: string;
+    opsApplied: number;
+  }>;
 }
 
 // ── MotionOp types ────────────────────────────────────────────
@@ -628,7 +660,7 @@ export function motionTransactionToStudioOps(
   // The reducer applies it atomically to the MotionDocument stored in project.motionDocuments
   return [
     makeOp(
-      'motion.document.patch' as any,
+      'motion.document.patch',
       { documentId, transaction: tx },
       'user'
     ),

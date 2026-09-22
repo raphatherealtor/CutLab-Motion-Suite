@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useEngine } from '@/engine/store';
 import { makeOp } from '@/engine/operations';
 import { toTimecode, fromSeconds, toSeconds } from '@/engine/time';
-import type { Clip, Effect, Mask, Keyframe } from '@/engine/schema';
+import type { Clip, Effect, Mask, Keyframe, EffectType } from '@/engine/schema';
 import { generateId } from '@/engine/schema';
 import { EFFECT_DEFINITIONS, createEffect } from '@/engine/effects';
 
@@ -102,7 +102,7 @@ export default function ClipInspector({ selectedClipId, activeTab: externalTab }
 
   const addEffect = useCallback((type: string) => {
     if (!clip || !activeSequence) return;
-    const effect = createEffect(type as Effect['type'], clip.effects.length);
+    const effect = createEffect(type as EffectType, clip.effects.length);
     dispatch(makeOp('clip.addEffect', { sequenceId: activeSequence.id, clipId: clip.id, effect }), `Add ${type}`);
   }, [clip, activeSequence, dispatch]);
 
@@ -581,7 +581,7 @@ function EffectCard({ effect, onToggle, onRemove, onSetParam, onResetParam }: {
   onResetParam: (key: string) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const def = EFFECT_DEFINITIONS[effect.type];
+  const def = EFFECT_DEFINITIONS[effect.type as EffectType];
 
   return (
     <div style={{ background: 'var(--color-elevated)', border: `1px solid ${effect.enabled ? 'var(--color-border)' : 'rgba(244,247,255,0.04)'}`, borderRadius: 'var(--radius)', marginBottom: '6px', overflow: 'hidden', opacity: effect.enabled ? 1 : 0.5 }}>

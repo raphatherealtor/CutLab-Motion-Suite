@@ -105,8 +105,9 @@ export default function SceneScriptPanel() {
 
   const seekToRegion = useCallback((region: SceneRegion) => {
     const frame = Math.round(toSeconds(region.start) * fps);
-    dispatch({ type: 'SET_PLAYHEAD', payload: { frame } });
-  }, [dispatch, fps]);
+    // Session-only playhead move — never a persistent op, never an undo step
+    engine.updateSession({ playheadFrame: frame });
+  }, [engine, fps]);
 
   if (!sceneScript || !activeSequence) {
     return (

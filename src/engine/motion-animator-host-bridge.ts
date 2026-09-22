@@ -13,6 +13,8 @@ import type { Clip, ProjectData } from './schema';
 import type { RationalTime } from './time';
 import { fromSeconds } from './time';
 import type { MotionDocument, MotionOp, MotionTransaction } from './motion-document';
+import type { FrameState } from './motion-document-utils';
+import { evaluateMotionClip } from './motion-document-utils';
 
 import { motionTransactionToStudioOps, motionLocalTimeToStudioSequenceTime, studioRationalToMotionRational,  } from './motion-bridge';
 
@@ -28,6 +30,12 @@ export interface MotionAnimatorHostBridge {
 
   clipLocalTime(seconds: number): { value: number; timescale: number };
   studioSequenceTime(localTime: { value: number; timescale: number }): RationalTime;
+
+  /**
+   * Evaluate the canonical MotionDocument at a clip-local time.
+   * Pure read — no state is copied or mutated.
+   */
+  evaluate(localTime: { value: number; timescale: number }): FrameState | null;
 
   /**
    * Persistent write path.
@@ -73,6 +81,15 @@ export function createMotionAnimatorHostBridge(
         return fromSeconds(handoff.clipStartSecs + localSecs, 120000);
       }
       return fromSeconds(motionLocalTimeToStudioSequenceTime(localSecs, clip), 120000);
+    },
+
+    evaluate(localTime) {
+      const clip = getClip();
+      const doc = getDocument();
+      if (!clip || !doc) return null;
+      const localSecs = localTime.value / localTime.timescale;
+      const sequenceTimeSecs = motionLocalTimeToStudioSequenceTime(localSecs, clip);
+      return evaluateMotionClip(engine.project, clip, sequenceTimeSecs);
     },
 
     commit(ops, description) {

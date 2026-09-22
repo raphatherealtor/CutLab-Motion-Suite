@@ -20,6 +20,7 @@ import { useEngine } from '@/engine/store';
 import { getAllPackages, getPackagesByKind, searchPackages, getCapturedRecipes, captureRecipeFromOps, type MotionPackage, type MotionPackageKind, type CapturedRecipe,  } from '@/engine/motion-package';
 
 import { makeOp } from '@/engine/operations';
+import { motionTransactionToStudioOps } from '@/engine/motion-bridge';
 import { generateId } from '@/engine/schema';
 
 import type { WorkspaceHandoff } from '@/engine/workspace-context';
@@ -121,10 +122,14 @@ export default function LibraryPackagePanel({
     const ops = selectedPackage.applyOps(targetDocId, packageParams);
 
     if (ops.length > 0) {
-      engine.dispatch(
-        makeOp('motionDocument.applyOps', { documentId: targetDocId, ops }),
-        `Apply ${selectedPackage.name}`
+      // Canonical commit path: MotionOp[] → MotionTransaction → Studio ops → dispatchBatch
+      const studioOps = motionTransactionToStudioOps(
+        { ops, description: `Apply ${selectedPackage.name}` },
+        project
       );
+      if (studioOps.length > 0) {
+        engine.dispatchBatch(studioOps, `Apply ${selectedPackage.name}`);
+      }
     }
   }, [selectedPackage, packageParams, onApplyPackage, project, session, motionHandoff, engine]);
 

@@ -40,10 +40,10 @@ export default function EditorTopBar({
     const { generateId, DEFAULT_FORMAT } = require('@/engine/schema');
     const seqId = generateId('seq');
     const tracks = [
-      { id: generateId('track'), kind: 'video', label: 'V1', muted: false, solo: false, locked: false, height: 56, gain: 0, order: 0, targeted: true },
-      { id: generateId('track'), kind: 'audio', label: 'A1', muted: false, solo: false, locked: false, height: 48, gain: 0, order: 1, targeted: true },
-      { id: generateId('track'), kind: 'graphic', label: 'G1', muted: false, solo: false, locked: false, height: 36, gain: 0, order: 2, targeted: false },
-      { id: generateId('track'), kind: 'caption', label: 'CAP', muted: false, solo: false, locked: false, height: 28, gain: 0, order: 3, targeted: false },
+      { id: generateId('track'), kind: 'video' as const, label: 'V1', muted: false, solo: false, locked: false, height: 56, gain: 0, order: 0, targeted: true },
+      { id: generateId('track'), kind: 'audio' as const, label: 'A1', muted: false, solo: false, locked: false, height: 48, gain: 0, order: 1, targeted: true },
+      { id: generateId('track'), kind: 'graphic' as const, label: 'G1', muted: false, solo: false, locked: false, height: 36, gain: 0, order: 2, targeted: false },
+      { id: generateId('track'), kind: 'caption' as const, label: 'CAP', muted: false, solo: false, locked: false, height: 28, gain: 0, order: 3, targeted: false },
     ];
     const seq = { id: seqId, name: 'New Sequence', format: DEFAULT_FORMAT, tracks, clips: [], markers: [], captions: [], transitions: [], cues: [] };
     engine.dispatch(makeOp('sequence.create', { sequence: seq }, 'user'), 'New sequence');

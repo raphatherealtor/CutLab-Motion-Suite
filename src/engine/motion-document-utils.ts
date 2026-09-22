@@ -9,13 +9,133 @@
 
 import type { ProjectData, Clip } from './schema';
 import type { MotionDocument, MotionObject, MotionTransaction, MotionOp, MotionBehavior, MotionMaterial } from './motion-document';
-import { evaluateMotionTransform, evaluateSignals } from './motion-document';
+import { createMotionDocument, evaluateMotionTransform, evaluateSignals } from './motion-document';
 import { toSeconds } from './time';
 import { generateId } from './schema';
 import { resolveMotionDocument as bridgeResolveMotionDocument } from './motion-bridge';
 
 // Re-export canonical types for workspace use
 export type { MotionBehavior, MotionMaterial };
+
+// ── Legacy → canonical document conversion ────────────────────
+
+/**
+ * Convert a legacy motion/types.ts MotionDocument into the canonical
+ * engine/motion-document.ts MotionDocument.
+ *
+ * This is the ONE seam where legacy Motion Suite documents enter the
+ * canonical project (ProjectData.motionDocuments). After conversion the
+ * document is indistinguishable from one created natively — same ID,
+ * same undo path, same evaluation path.
+ */
+export function convertLegacyDocumentToEngine(
+  regDoc: import('@/motion/types').MotionDocument
+): MotionDocument {
+  const engineDoc = createMotionDocument(
+    regDoc.name,
+    secondsToMotionTime(motionTimeToSeconds(regDoc.duration)),
+    regDoc.fps,
+    regDoc.width,
+    regDoc.height
+  );
+  engineDoc.id = regDoc.id;
+  engineDoc.createdAt = regDoc.createdAt;
+  engineDoc.updatedAt = regDoc.updatedAt;
+  if (regDoc.templateId) engineDoc.templateId = regDoc.templateId;
+  if (regDoc.templateParams) engineDoc.templateParams = regDoc.templateParams;
+
+  const mapKind = (kind: string): MotionObject['kind'] => {
+    const map: Record<string, MotionObject['kind']> = {
+      text: 'text',
+      shape: 'shape',
+      image: 'image',
+      video: 'video',
+      group: 'group',
+      camera: 'camera',
+      light: 'null-object',
+      particle: 'shape',
+      path: 'shape',
+      mask: 'shape',
+      null: 'null-object',
+      svg: 'svg',
+    };
+    return map[kind] ?? 'shape';
+  };
+
+  for (const [objId, regObj] of Object.entries(regDoc.objects)) {
+    const transform = regObj.transform;
+    engineDoc.objects[objId] = {
+      id: regObj.id,
+      kind: mapKind(regObj.kind),
+      name: regObj.name,
+      parentId: regObj.parentId,
+      depth: regObj.depth,
+      transform: {
+        x: transform.position?.x ?? 0,
+        y: transform.position?.y ?? 0,
+        z: transform.position?.z ?? 0,
+        scaleX: transform.scale?.x ?? 1,
+        scaleY: transform.scale?.y ?? 1,
+        scaleZ: transform.scale?.z ?? 1,
+        rotationX: transform.rotation?.x ?? 0,
+        rotationY: transform.rotation?.y ?? 0,
+        rotationZ: transform.rotation?.z ?? 0,
+        anchorX: transform.anchor?.x ?? 0,
+        anchorY: transform.anchor?.y ?? 0,
+        anchorZ: transform.anchor?.z ?? 0,
+        opacity: transform.opacity ?? 1,
+      },
+      keyframes: (regObj.keyframes ?? []).map((k) => ({
+        id: k.id,
+        time: { value: k.time.value, timescale: k.time.timescale },
+        property: k.property,
+        value: typeof k.value === 'object' && k.value !== null && !Array.isArray(k.value)
+          ? 0
+          : (k.value as number | string | boolean | number[]),
+        easing: (k.easing ?? 'linear') as MotionDocument['objects'][string]['keyframes'][number]['easing'],
+        easingParams: k.easingParams,
+      })),
+      behaviors: (regObj.behaviors ?? []).map((b) => ({
+        id: b.id,
+        type: (b.type ?? 'fade-in') as MotionBehavior['type'],
+        startTime: { value: b.startTime.value, timescale: b.startTime.timescale },
+        duration: { value: b.duration.value, timescale: b.duration.timescale },
+        params: b.params ?? {},
+        signalBinding: b.signalBinding,
+        easing: (b.easing ?? 'ease-out') as MotionBehavior['easing'],
+      })),
+      masks: [],
+      blendMode: (regObj.blendMode as MotionObject['blendMode']) ?? 'normal',
+      visible: regObj.visible,
+      solo: false,
+      locked: regObj.locked,
+      text: regObj.textSegments?.[0]?.text ?? (regObj.kind === 'text' ? regObj.name : undefined),
+      fontSize: regObj.textSegments?.[0]?.fontSize ?? 48,
+      fontFamily: regObj.textSegments?.[0]?.fontFamily ?? 'sans-serif',
+      fontWeight: regObj.textSegments?.[0]?.fontWeight ?? 700,
+      assetRef: regObj.assetRef,
+      svgData: regObj.svgData,
+      childIds: regObj.children,
+    };
+  }
+  engineDoc.rootObjectIds = [...regDoc.rootObjectIds];
+
+  // Signals: legacy kind → canonical type/defaultValue
+  for (const [sigId, regSig] of Object.entries(regDoc.signals ?? {})) {
+    engineDoc.signals[sigId] = {
+      id: regSig.id,
+      name: regSig.name,
+      type: 'number',
+      defaultValue: 0,
+      expression: regSig.expression,
+    };
+  }
+
+  if (regDoc.rigs) engineDoc.rigs = regDoc.rigs;
+  if (regDoc.contributionTrace) engineDoc.contributionTrace = regDoc.contributionTrace;
+
+  return engineDoc;
+}
 
 // ── Color utilities ───────────────────────────────────────────
 

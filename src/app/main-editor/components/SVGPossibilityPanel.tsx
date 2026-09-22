@@ -18,6 +18,7 @@ import {
   type SVGPossibilityKind,
 } from '@/engine/svg-possibilities';
 import { makeOp } from '@/engine/operations';
+import { convertLegacyDocumentToEngine } from '@/engine/motion-document-utils';
 import { generateId } from '@/engine/schema';
 import { fromSeconds } from '@/engine/time';
 
@@ -81,19 +82,16 @@ export default function SVGPossibilityPanel() {
     const fps = seq.format.fps;
     const playheadSecs = session.playheadFrame / fps;
 
-    // Store the MotionDocument in project
-    const docId = possibility.motionDocument.id;
-    const docJson = JSON.stringify(possibility.motionDocument);
+    // Convert legacy Motion Suite doc → canonical engine doc (same ID)
+    const engineDoc = convertLegacyDocumentToEngine(possibility.motionDocument);
+    const docId = engineDoc.id;
 
     // Create a motion clip on the timeline
     const clipId = generateId();
     const clipDuration = possibility.motionDocument.duration.value / possibility.motionDocument.duration.timescale;
 
     engine.dispatch(
-      makeOp('motionDocument.upsert', {
-        documentId: docId,
-        documentJson: docJson,
-      }),
+      makeOp('motion.document.register', { document: engineDoc }),
       `Import SVG: ${possibility.label}`
     );
 
@@ -109,8 +107,16 @@ export default function SVGPossibilityPanel() {
           duration: fromSeconds(clipDuration, fps),
           sourceIn: fromSeconds(0, fps),
           sourceOut: fromSeconds(clipDuration, fps),
+          transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0 },
+          keyframes: [],
+          effects: [],
+          masks: [],
+          gain: 0,
+          fadeIn: fromSeconds(0, fps),
+          fadeOut: fromSeconds(0, fps),
           speed: 1,
           reverse: false,
+          freeze: false,
           disabled: false,
           motionDocumentId: docId,
         },

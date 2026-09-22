@@ -203,7 +203,7 @@ export interface SignalGate {
   /** Gate mode: 'and' = both active, 'not' = primary active when gate inactive */
   gateMode: 'and' | 'not' | 'multiply' | 'min' | 'max';
   /** Output mapping */
-  outputMapping: Omit<SignalMapping, 'id' | 'sourceChannelId' | 'label'>;
+  outputMapping: Omit<SignalMapping, 'id' | 'label'>;
 }
 
 export function evaluateSignalGate(

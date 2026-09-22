@@ -24,7 +24,7 @@ import { compileMotion, evaluateMotion } from '@/motion/evaluate';
 import { generateMotionId } from '@/motion/utils';
 import type { Sequence } from './schema';
 import type { StudioAnalysisContract } from './analysis-contract';
-import type { MotionAgentContext } from './agent-context';
+import { MotionAgentContext } from './agent-context';
 
 import { findCompatiblePackages } from './motion-package';
 
@@ -72,7 +72,7 @@ export interface AIMotionAnimatorContext {
   /** Analysis contract */
   analysis: StudioAnalysisContract;
   /** Motion agent context */
-  motionContext: MotionAgentContext;
+  motionContext: ReturnType<typeof MotionAgentContext>;
 }
 
 export type AIWorkspaceContext = AIStudioContext | AIMotionAnimatorContext;
