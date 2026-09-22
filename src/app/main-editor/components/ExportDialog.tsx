@@ -145,9 +145,8 @@ export default function ExportDialog({ onClose }: ExportDialogProps) {
           {/* Encoder path info */}
           <div style={{ marginBottom: '16px', padding: '8px 10px', background: 'rgba(59,130,255,0.06)', border: '1px solid rgba(59,130,255,0.15)', borderRadius: 'var(--radius)', fontSize: '10px', color: 'var(--color-subtle)' }}>
             <div style={{ fontWeight: 600, color: 'var(--color-accent)', marginBottom: '3px' }}>Export Path</div>
-            <div>1. WebCodecs (VP9 + deterministic timestamps) — if available</div>
-            <div>2. MediaRecorder (VP8/VP9 + real audio) — fallback</div>
-            <div>3. WAV audio only — last resort</div>
+            <div>1. MediaRecorder (VP9/VP8 + Opus) — real video + audio</div>
+            <div>2. WAV audio only — last resort if MediaRecorder is unavailable</div>
             <div style={{ marginTop: '4px', color: 'rgba(244,247,255,0.3)' }}>Same compositor as preview. Real video + Motion + audio.</div>
           </div>
 

@@ -361,7 +361,12 @@ export function migrateObjectBehaviors(obj: MotionObject): MotionObject {
 /**
  * Migrate all objects in a MotionDocument from legacy behavior storage.
  */
+const behaviorMigrationCache = new WeakMap<MotionDocument, MotionDocument>();
+
 export function migrateDocumentBehaviors(doc: MotionDocument): MotionDocument {
+  const cached = behaviorMigrationCache.get(doc);
+  if (cached) return cached;
+
   let changed = false;
   const newObjects: Record<string, MotionObject> = {};
   for (const [id, obj] of Object.entries(doc.objects)) {
@@ -369,8 +374,9 @@ export function migrateDocumentBehaviors(doc: MotionDocument): MotionDocument {
     newObjects[id] = migrated;
     if (migrated !== obj) changed = true;
   }
-  if (!changed) return doc;
-  return { ...doc, objects: newObjects };
+  const result = changed ? { ...doc, objects: newObjects } : doc;
+  behaviorMigrationCache.set(doc, result);
+  return result;
 }
 
 // ── Apply MotionOp to MotionDocument ─────────────────────────
@@ -1072,13 +1078,50 @@ export function evaluateMotionTransform(
  */
 export function evaluateSignals(
   doc: MotionDocument,
-  _localTimeSecs: number
+  localTimeSecs: number
 ): Record<string, number> {
   let result: Record<string, number> = {};
   for (const [id, sig] of Object.entries(doc.signals)) {
     const val = sig.currentValue ?? sig.defaultValue;
-    if (typeof val === 'number') result[id] = val;
-    else if (typeof val === 'boolean') result[id] = val ? 1 : 0;
+    if (typeof val === 'number') {
+      result[id] = val;
+    } else if (typeof val === 'boolean') {
+      result[id] = val ? 1 : 0;
+    } else {
+      const kind = sig.kind;
+      if (kind) result[id] = evaluateSignalKind(kind, localTimeSecs);
+    }
   }
   return result;
+}
+
+function evaluateSignalKind(kind: string, timeSecs: number): number {
+  switch (kind) {
+    case 'audio-rms': return generateDeterministicSignal(timeSecs, 'rms');
+    case 'audio-low': return generateDeterministicSignal(timeSecs, 'low');
+    case 'audio-mid': return generateDeterministicSignal(timeSecs, 'mid');
+    case 'audio-high': return generateDeterministicSignal(timeSecs, 'high');
+    case 'audio-beat': return generateBeatSignal(timeSecs, 120);
+    case 'audio-onset':
+    case 'audio-transient':
+    case 'manual':
+    default:
+      return 0;
+  }
+}
+
+function generateDeterministicSignal(timeSecs: number, seed: string): number {
+  const seedHash = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  const freq1 = 0.5 + (seedHash % 7) * 0.3;
+  const freq2 = 1.2 + (seedHash % 5) * 0.4;
+  const phase = (seedHash % 100) / 100;
+  const v = (Math.sin(timeSecs * freq1 * Math.PI * 2 + phase) + 1) / 2 * 0.6
+    + (Math.sin(timeSecs * freq2 * Math.PI * 2) + 1) / 2 * 0.4;
+  return Math.max(0, Math.min(1, v));
+}
+
+function generateBeatSignal(timeSecs: number, bpm: number): number {
+  const beatInterval = 60 / bpm;
+  const phase = timeSecs % beatInterval;
+  return phase < 0.05 ? 1 - phase / 0.05 : 0;
 }

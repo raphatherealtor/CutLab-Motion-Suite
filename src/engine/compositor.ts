@@ -30,8 +30,17 @@ interface ImageCache {
   ready: boolean;
 }
 
+interface SvgImageCache {
+  element: HTMLImageElement;
+  key: string;
+  svgData: string;
+  url: string;
+  ready: boolean;
+}
+
 const videoCache = new Map<string, VideoCache>();
 const imageCache = new Map<string, ImageCache>();
+const svgImageCache = new Map<string, SvgImageCache>();
 
 export function getOrCreateVideoElement(assetId: string, runtimeUrl: string): HTMLVideoElement {
   const cached = videoCache.get(assetId);
@@ -73,34 +82,125 @@ export function getOrCreateImageElement(assetId: string, runtimeUrl: string): HT
   return img;
 }
 
+/**
+ * Cache an SVG data string as an Image element (data URL → decoded image).
+ * SVG objects are redrawn every frame; previously a new Image + object URL was
+ * created per frame (leaking object URLs) and never drawn because `img.complete`
+ * is false synchronously. Caching reuses the decoded image and revokes the old
+ * URL when the SVG content changes.
+ */
+export function getOrCreateSvgImageElement(key: string, svgData: string): HTMLImageElement {
+  const cached = svgImageCache.get(key);
+  if (cached && cached.svgData === svgData) return cached.element;
+
+  if (cached) URL.revokeObjectURL(cached.url);
+
+  const blob = new Blob([svgData], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  const entry: SvgImageCache = { element: img, key, svgData, url, ready: false };
+  img.onload = () => { entry.ready = true; };
+  img.src = url;
+
+  svgImageCache.set(key, entry);
+  return img;
+}
+
 export function clearCompositorCache(): void {
   for (const [, v] of videoCache) {
     v.element.pause();
     v.element.src = '';
+    v.element.load();
+  }
+  for (const [, s] of svgImageCache) {
+    URL.revokeObjectURL(s.url);
   }
   videoCache.clear();
   imageCache.clear();
+  svgImageCache.clear();
+}
+
+/**
+ * Drop cached video/image elements whose assets are no longer referenced by the
+ * project. Keeps the element cache from growing unboundedly across a session as
+ * assets are removed or relinked. The asset-owned runtimeUrl (blob URL) is NOT
+ * revoked here — assets own that lifecycle.
+ */
+export function pruneCompositorCache(project: ProjectData): void {
+  const liveAssetIds = new Set(Object.keys(project.assets ?? {}));
+  for (const [assetId, v] of videoCache) {
+    if (!liveAssetIds.has(assetId)) {
+      v.element.pause();
+      v.element.src = '';
+      v.element.load();
+      videoCache.delete(assetId);
+    }
+  }
+  for (const [assetId] of imageCache) {
+    if (!liveAssetIds.has(assetId)) imageCache.delete(assetId);
+  }
 }
 
 // ── Seek video to exact source time ──────────────────────────
+
+/**
+ * Sub-frame seek tolerance. Consecutive frames at 24/30/60fps differ by
+ * ≥16ms, so a ~1ms tolerance means every real frame change triggers a seek
+ * while redundant re-renders of the SAME frame are skipped. The previous
+ * 40ms tolerance was wider than a frame at 30fps, so consecutive export/scrub
+ * frames never sought and video froze on its first decoded frame.
+ */
+const SEEK_EPSILON = 0.001;
 
 export function seekVideoToTime(
   video: HTMLVideoElement,
   sourceTimeSecs: number
 ): Promise<void> {
   return new Promise((resolve) => {
-    if (Math.abs(video.currentTime - sourceTimeSecs) < 0.04) {
-      resolve();
-      return;
-    }
-    const onSeeked = () => {
-      video.removeEventListener('seeked', onSeeked);
+    const target = Number.isFinite(sourceTimeSecs) ? Math.max(0, sourceTimeSecs) : 0;
+    let settled = false;
+    let onSeeked: (() => void) | null = null;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (onSeeked) video.removeEventListener('seeked', onSeeked);
+      clearTimeout(timer);
       resolve();
     };
-    video.addEventListener('seeked', onSeeked);
-    video.currentTime = Math.max(0, sourceTimeSecs);
-    // Timeout fallback
-    setTimeout(resolve, 200);
+
+    // Fallback so a never-firing 'seeked' (same-time set, slow decode, error)
+    // cannot stall a scrub or an export frame forever.
+    const timer = setTimeout(finish, 300);
+
+    const doSeek = () => {
+      if (Math.abs(video.currentTime - target) < SEEK_EPSILON && video.readyState >= 2) {
+        finish();
+        return;
+      }
+      onSeeked = () => finish();
+      video.addEventListener('seeked', onSeeked);
+      try {
+        video.currentTime = target;
+      } catch {
+        finish();
+        return;
+      }
+      // Setting currentTime to its current value does not fire 'seeked'.
+      if (Math.abs(video.currentTime - target) < SEEK_EPSILON) finish();
+    };
+
+    if (video.readyState < 2) {
+      // Wait until the element has decoded at least one frame so the seek and
+      // the subsequent drawImage have real pixels to work with (frame-zero start).
+      const onReady = () => {
+        video.removeEventListener('loadeddata', onReady);
+        doSeek();
+      };
+      video.addEventListener('loadeddata', onReady);
+    } else {
+      doSeek();
+    }
   });
 }
 
@@ -330,14 +430,9 @@ function renderMotionObject(
     }
     case 'svg': {
       if (obj.svgData) {
-        // SVG rendering via Image element with data URL
-        const svgBlob = new Blob([obj.svgData], { type: 'image/svg+xml' });
-        const url = URL.createObjectURL(svgBlob);
-        const img = new Image();
-        img.src = url;
-        if (img.complete) {
+        const img = getOrCreateSvgImageElement(obj.id, obj.svgData);
+        if (img.complete && img.naturalWidth > 0) {
           ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
-          URL.revokeObjectURL(url);
         }
       }
       break;
@@ -361,7 +456,9 @@ function renderMotionObject(
           const video = getOrCreateVideoElement(asset.id, asset.runtimeUrl);
           // Map motion local time to video source time
           const videoTime = localTimeSecs * (obj.videoSpeed ?? 1) + (obj.videoTimeOffset ?? 0);
-          if (Math.abs(video.currentTime - videoTime) > 0.1) {
+          // Sub-frame tolerance: a 0.1s tolerance froze Motion video objects on
+          // their first decoded frame for any clip ≤10fps-adjacent time steps.
+          if (Math.abs(video.currentTime - videoTime) > SEEK_EPSILON) {
             video.currentTime = Math.max(0, videoTime);
           }
           if (video.readyState >= 2) {
@@ -705,7 +802,14 @@ export async function renderFrame(
     switch (layer.kind) {
       case 'video': {
         if (asset && asset.runtimeUrl) {
-          await renderVideoLayer(ctx, layer, asset, width, height, playing);
+          // Image assets are placed on the timeline as 'video' clips (MediaBin);
+          // an <video> element cannot decode an image blob URL, so route them
+          // through the image renderer instead of drawing a permanent black frame.
+          if (asset.kind === 'image') {
+            renderImageLayer(ctx, layer, asset, width, height);
+          } else {
+            await renderVideoLayer(ctx, layer, asset, width, height, playing);
+          }
         }
         break;
       }
@@ -713,7 +817,6 @@ export async function renderFrame(
         // Audio layers don't render visually
         break;
       }
-      // Note: ClipKind has no 'image' — image assets are placed as video-kind clips
       case 'motion': {
         // Render MotionDocument
         if (layer.motionBundleId) {
@@ -804,6 +907,7 @@ export async function syncVideosToTime(
   const promises = videoLayers.map(async (layer) => {
     const asset = layer.assetId ? project.assets[layer.assetId] : null;
     if (!asset?.runtimeUrl) return;
+    if (asset.kind === 'image') return; // images are static, not seeked video elements
     const video = getOrCreateVideoElement(asset.id, asset.runtimeUrl);
     await seekVideoToTime(video, layer.sourceTimeSecs);
   });
@@ -819,6 +923,7 @@ export function startVideoPlayback(plan: RenderPlan, project: ProjectData): void
     if (layer.kind !== 'video' || !layer.assetId) continue;
     const asset = project.assets[layer.assetId];
     if (!asset?.runtimeUrl) continue;
+    if (asset.kind === 'image') continue; // images don't play — they are static layers
     const video = getOrCreateVideoElement(asset.id, asset.runtimeUrl);
     video.currentTime = layer.sourceTimeSecs;
     video.play().catch(() => {}); // ignore autoplay policy errors
