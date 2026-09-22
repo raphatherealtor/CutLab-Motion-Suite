@@ -9,7 +9,6 @@
 
 import React, { useState, useMemo, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
-import { makeOp } from '@/engine/operations';
 import { deriveSceneScript, getActiveSceneRegion, getChoreographyDirective, type SceneRegion, type SceneRegionKind, type EnergyLevel } from '@/engine/scene-script';
 import { toSeconds } from '@/engine/time';
 
@@ -53,7 +52,7 @@ const ENERGY_COLORS: Record<EnergyLevel, string> = {
 
 export default function SceneScriptPanel() {
   const engine = useEngine();
-  const { project, activeSequence, session, dispatch } = engine;
+  const { project, activeSequence, session } = engine;
   const fps = activeSequence?.format.fps ?? 29.97;
   const currentTimeSecs = session.playheadFrame / fps;
 
@@ -106,8 +105,9 @@ export default function SceneScriptPanel() {
 
   const seekToRegion = useCallback((region: SceneRegion) => {
     const frame = Math.round(toSeconds(region.start) * fps);
-    dispatch(makeOp('playhead.set', { frame }), 'Seek to region');
-  }, [dispatch, fps]);
+    // Session-only playhead move — never a persistent op, never an undo step
+    engine.updateSession({ playheadFrame: frame });
+  }, [engine, fps]);
 
   if (!sceneScript || !activeSequence) {
     return (

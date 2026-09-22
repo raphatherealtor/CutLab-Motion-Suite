@@ -832,43 +832,38 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
 
     // ── Motion Documents ─────────────────────────────────────
     case 'motion.document.patch': {
-      const docId: string = p.documentId;
-      const tx: MotionTransaction = p.transaction;
-      const existing = state.motionDocuments?.[docId];
+      const { documentId, transaction } = env.payload as import('./operations').MotionDocumentPatchPayload;
+      const existing = state.motionDocuments?.[documentId];
       if (!existing) return state;
-      const updated = applyMotionTransaction(existing, tx);
+      const updated = applyMotionTransaction(existing, transaction);
       return {
         ...state,
-        motionDocuments: { ...(state.motionDocuments ?? {}), [docId]: updated },
+        motionDocuments: { ...(state.motionDocuments ?? {}), [documentId]: updated },
       };
     }
-    case 'motion.document.register':
+    case 'motion.document.register': {
+      const { document } = env.payload as import('./operations').MotionDocumentRegisterPayload;
+      if (!document) return state;
+      return {
+        ...state,
+        motionDocuments: { ...(state.motionDocuments ?? {}), [document.id]: document },
+      };
+    }
     case 'motionDocument.upsert': {
-      // Support both op types for compatibility
-      // motion.document.register: payload = { document: MotionDocument }
-      // motionDocument.upsert: payload = { resource: { id, documentJson, ... } } (legacy)
-      if (p.document) {
-        const doc = p.document;
+      // Legacy: payload = { resource: { id, documentJson, ... } }
+      const { resource } = env.payload as import('./operations').LegacyMotionDocumentUpsertPayload;
+      if (!resource) return state;
+      try {
+        const doc = typeof resource.documentJson === 'string'
+          ? JSON.parse(resource.documentJson)
+          : resource;
         return {
           ...state,
           motionDocuments: { ...(state.motionDocuments ?? {}), [doc.id]: doc },
         };
+      } catch {
+        return state;
       }
-      if (p.resource) {
-        // Legacy: resource has documentJson
-        try {
-          const doc = typeof p.resource.documentJson === 'string'
-            ? JSON.parse(p.resource.documentJson)
-            : p.resource;
-          return {
-            ...state,
-            motionDocuments: { ...(state.motionDocuments ?? {}), [doc.id]: doc },
-          };
-        } catch {
-          return state;
-        }
-      }
-      return state;
     }
     case 'motion.document.remove': {
       const { [p.documentId]: _rm, ...rest } = state.motionDocuments ?? {};

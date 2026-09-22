@@ -4,93 +4,21 @@ import React, { useState, useCallback, useMemo } from 'react';
 import { useEngine } from '@/engine/store';
 import { makeOp } from '@/engine/operations';
 import { generateId } from '@/engine/schema';
-import { fromSeconds, toSeconds } from '@/engine/time';
+import { fromSeconds } from '@/engine/time';
 import { createMotionDocument } from '@/engine/motion-document';
 import type { MotionDocument as EngineMotionDocument } from '@/engine/motion-document';
+import { motionTypesDocToEngineDoc } from '@/engine/motion-bridge';
 import { MOTION_TEMPLATE_GENERATORS } from '@/motion/registry';
 import type { MotionTemplateParams } from '@/motion/types';
 import type { MotionDocument as RegistryMotionDocument } from '@/motion/types';
 
 // ── Convert registry MotionDocument → engine MotionDocument ──
-
+// ONE shared converter (engine/motion-bridge motionTypesDocToEngineDoc) —
+// legacy docs enter the canonical project through this seam only.
 function convertRegistryDocToEngine(
   regDoc: RegistryMotionDocument
 ): EngineMotionDocument {
-  let engineDoc = createMotionDocument(
-    regDoc.name,
-    { value: Math.round(toSeconds(regDoc.duration as any) * 30000), timescale: 30000 },
-    regDoc.fps,
-    regDoc.width,
-    regDoc.height
-  );
-  engineDoc.id = regDoc.id;
-  engineDoc.createdAt = regDoc.createdAt;
-  engineDoc.updatedAt = regDoc.updatedAt;
-  if (regDoc.templateId) {
-    // Store template identity
-    (engineDoc as any).templateId = regDoc.templateId;
-  }
-
-  // Convert objects
-  for (const [objId, regObj] of Object.entries(regDoc.objects)) {
-    const transform = regObj.transform;
-    engineDoc.objects[objId] = {
-      id: regObj.id,
-      kind: mapKind(regObj.kind),
-      name: regObj.name,
-      parentId: regObj.parentId,
-      depth: regObj.depth,
-      transform: {
-        x: transform.position?.x ?? 0,
-        y: transform.position?.y ?? 0,
-        z: transform.position?.z ?? 0,
-        scaleX: transform.scale?.x ?? 1,
-        scaleY: transform.scale?.y ?? 1,
-        scaleZ: transform.scale?.z ?? 1,
-        rotationX: transform.rotation?.x ?? 0,
-        rotationY: transform.rotation?.y ?? 0,
-        rotationZ: transform.rotation?.z ?? 0,
-        anchorX: transform.anchor?.x ?? 0,
-        anchorY: transform.anchor?.y ?? 0,
-        anchorZ: transform.anchor?.z ?? 0,
-        opacity: transform.opacity ?? 1,
-      },
-      keyframes: [],
-      behaviors: (regObj.behaviors as never) ?? [],
-      masks: [],
-      blendMode: (regObj.blendMode as any) ?? 'normal',
-      visible: regObj.visible,
-      solo: false,
-      locked: regObj.locked,
-      text: regObj.textSegments?.[0]?.text ?? (regObj.kind === 'text' ? regObj.name : undefined),
-      fontSize: regObj.textSegments?.[0]?.fontSize ?? 48,
-      fontFamily: regObj.textSegments?.[0]?.fontFamily ?? 'sans-serif',
-      fontWeight: regObj.textSegments?.[0]?.fontWeight ?? 700,
-      assetRef: regObj.assetRef,
-      svgData: regObj.svgData,
-      childIds: regObj.children,
-    };
-  }
-  engineDoc.rootObjectIds = regDoc.rootObjectIds;
-  return engineDoc;
-}
-
-function mapKind(kind: string): EngineMotionDocument['objects'][string]['kind'] {
-  const map: Record<string, EngineMotionDocument['objects'][string]['kind']> = {
-    text: 'text',
-    shape: 'shape',
-    image: 'image',
-    video: 'video',
-    group: 'group',
-    camera: 'camera',
-    light: 'null-object',
-    particle: 'shape',
-    path: 'shape',
-    mask: 'shape',
-    null: 'null-object',
-    svg: 'svg',
-  };
-  return map[kind] ?? 'shape';
+  return motionTypesDocToEngineDoc(regDoc as unknown as Parameters<typeof motionTypesDocToEngineDoc>[0]);
 }
 
 // ── Families ──────────────────────────────────────────────────
@@ -230,7 +158,7 @@ export default function MotionLibrary({ onOpenMotionAnimator }: MotionLibraryPro
 
     // Register MotionDocument + add clip in one atomic batch (one undo entry)
     engine.dispatchBatch([
-      makeOp('motion.document.register' as any, { document: engineDoc }, 'user'),
+      makeOp('motion.document.register', { document: engineDoc }, 'user'),
       makeOp('clip.add', { sequenceId: activeSequence.id, clip: motionClip }, 'user'),
     ], `Place ${tplName}`);
 

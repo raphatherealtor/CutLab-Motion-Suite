@@ -11,11 +11,35 @@
 import type { ProjectData, Clip } from './schema';
 import type { RationalTime } from './time';
 import { toSeconds, fromSeconds } from './time';
-import type { MotionDocument, MotionTransaction, MotionOp } from './motion-document';
-import { applyMotionTransaction } from './motion-document';
+import type { MotionDocument, MotionTransaction } from './motion-document';
+import { evaluateMotionTransform } from './motion-document';
 import { makeOp } from './operations';
 import type { OpEnvelope } from './operations';
 import { generateId } from './schema';
+
+/**
+ * Structural Motion op shape — the ONE commit seam accepts both
+ * engine/motion-document.ts MotionOps and legacy motion/types.ts MotionOps.
+ * The reducer applies them through the canonical MotionTransaction applier.
+ */
+export interface MotionOpLike {
+  documentId: string;
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+export interface MotionTransactionLike {
+  ops: MotionOpLike[];
+  description: string;
+}
+
+export function isMotionTransactionLike(tx: unknown): tx is MotionTransactionLike {
+  return (
+    typeof tx === 'object' && tx !== null &&
+    typeof (tx as MotionTransactionLike).description === 'string' &&
+    Array.isArray((tx as MotionTransactionLike).ops)
+  );
+}
 
 
 // ── Time Conversion Seam ──────────────────────────────────────
@@ -92,17 +116,22 @@ export function resolveClipMotionDocument(
 /**
  * Convert a MotionTransaction into Studio canonical OpEnvelopes.
  * One Motion transaction → one Studio history entry.
- * Accepts both engine/motion-document.ts and motion/types.ts transaction shapes
- * (motion/types ops carry extra provenance fields, which are structurally compatible).
+ * Accepts both engine/motion-document.ts and motion/types.ts transaction shapes.
+ *
+ * Each document's ops are packed as ONE 'motion.document.patch' op — the
+ * canonical Motion round-trip: the reducer (the ONE mutation door) applies
+ * the transaction to the MotionDocument stored in ProjectData.motionDocuments.
+ * No document copy is computed here; the document only ever changes inside
+ * the reducer, so undo/redo snapshots stay canonical.
  */
 export function motionTransactionToStudioOps(
-  transaction: MotionTransaction,
+  transaction: MotionTransactionLike | MotionTransaction,
   project: ProjectData
 ): OpEnvelope[] {
   const ops: OpEnvelope[] = [];
 
   // Group ops by documentId
-  const byDoc = new Map<string, MotionOp[]>();
+  const byDoc = new Map<string, MotionOpLike[]>();
   for (const op of transaction.ops) {
     const arr = byDoc.get(op.documentId) ?? [];
     arr.push(op);
@@ -113,13 +142,11 @@ export function motionTransactionToStudioOps(
     const existing = project.motionDocuments?.[docId];
     if (!existing) continue;
 
-    // Build a transaction from these ops and apply it
     const tx: MotionTransaction = {
-      ops: motionOps,
+      ops: motionOps as MotionTransaction['ops'],
       description: transaction.description,
     };
-    const updated = applyMotionTransaction(existing, tx);
-    ops.push(makeOp('motion.document.register', { document: updated }, 'user'));
+    ops.push(makeOp('motion.document.patch', { documentId: docId, transaction: tx }, 'user'));
   }
 
   return ops;
@@ -280,7 +307,9 @@ export function motionTypesDocToEngineDoc(legacy: LegacyMotionDocInput): MotionD
     };
   }
 
-  // Signals: legacy {id, kind, name} → canonical {id, name, type, defaultValue}
+  // Signals: legacy {id, kind, name} → canonical {id, name, type, defaultValue};
+  // kind preserved as the canonical optional channel id so panels bind by
+  // canonical identity (no duplicate signals per bind)
   const signals: MotionDocument['signals'] = {};
   for (const [sigId, rawSig] of Object.entries(legacy.signals ?? {})) {
     signals[sigId] = {
@@ -289,6 +318,7 @@ export function motionTypesDocToEngineDoc(legacy: LegacyMotionDocInput): MotionD
       type: 'number',
       defaultValue: 0,
       expression: rawSig.expression as string | undefined,
+      kind: rawSig.kind as string | undefined,
     };
   }
 
@@ -416,7 +446,6 @@ export function evaluateMotionClip(
   if (!doc) return null;
 
   const localTimeSecs = studioTimeToMotionTime(sequenceTimeSecs, clip);
-  const { evaluateMotionTransform } = require('./motion-document');
 
   const objects = Object.values(doc.objects).map((obj) => {
     const mt = evaluateMotionTransform(obj, localTimeSecs);
