@@ -120,7 +120,8 @@ export function convertLegacyDocumentToEngine(
   }
   engineDoc.rootObjectIds = [...regDoc.rootObjectIds];
 
-  // Signals: legacy kind → canonical type/defaultValue
+  // Signals: legacy kind → canonical type/defaultValue, kind preserved as
+  // the canonical optional channel id so panels bind by canonical identity
   for (const [sigId, regSig] of Object.entries(regDoc.signals ?? {})) {
     engineDoc.signals[sigId] = {
       id: regSig.id,
@@ -128,6 +129,7 @@ export function convertLegacyDocumentToEngine(
       type: 'number',
       defaultValue: 0,
       expression: regSig.expression,
+      kind: regSig.kind,
     };
   }
 

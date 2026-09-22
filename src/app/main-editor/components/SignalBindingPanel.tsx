@@ -9,7 +9,7 @@
 import React, { useState, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
 import { resolveClipMotionDocument, motionTransactionToStudioOps } from '@/engine/motion-bridge';
-import type { MotionObject, MotionBehavior, MotionSignal } from '@/motion/types';
+import type { MotionObject, MotionBehavior, MotionSignal } from '@/engine/motion-document';
 import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
 import { secondsToMotionTime, motionTimeToSeconds } from '@/motion/types';
 import { generateMotionId } from '@/motion/utils';
@@ -130,22 +130,29 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
     const targetObj = rootObjs[0];
     if (!targetObj) return;
 
+    // Canonical identity: signals are matched by `kind`, the canonical
+    // optional channel id (preserved by the legacy→canonical conversion seam
+    // and set on every signal this panel creates) — never by record key guess.
     const existingSig = Object.values(doc.signals).find((s) => s.kind === starter.source);
     const sigId = existingSig?.id ?? generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
     if (!existingSig) {
+      // Canonical MotionSignal shape — the reducer stores this as-is into
+      // ProjectData.motionDocuments[doc.id].signals[sigId].
       const signal: MotionSignal = {
         id: sigId,
-        kind: starter.source as MotionSignal['kind'],
+        kind: starter.source,
         name: SIGNAL_SOURCES.find((s) => s.kind === starter.source)?.label ?? starter.source,
+        type: 'number',
+        defaultValue: 0,
       };
       ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal }));
     }
 
-    // Handle camera pulse specially
+    // Handle camera pulse specially — canonical docs keep cameras in a record
     if (starter.id === 'camera-pulse') {
-      if (!doc.camera) {
+      if (Object.keys(doc.cameras ?? {}).length === 0) {
         const cam = {
           id: generateMotionId('cam'), name: 'Camera',
           transform: { position: { x: 0, y: 0, z: -800 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, anchor: { x: 0, y: 0, z: 0 }, opacity: 1 },
@@ -181,8 +188,10 @@ export default function SignalBindingPanel({ clipId }: SignalBindingPanelProps) 
     if (!existingSig) {
       const signal: MotionSignal = {
         id: sigId,
-        kind: selectedSource as MotionSignal['kind'],
+        kind: selectedSource,
         name: SIGNAL_SOURCES.find((s) => s.kind === selectedSource)?.label ?? selectedSource,
+        type: 'number',
+        defaultValue: 0,
       };
       ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal }));
     }
