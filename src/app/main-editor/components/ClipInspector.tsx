@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useEngine } from '@/engine/store';
 import { makeOp } from '@/engine/operations';
 import { toTimecode, fromSeconds, toSeconds } from '@/engine/time';
-import type { Clip, Effect, Mask, Keyframe, EffectType } from '@/engine/schema';
+import type { Clip, Effect, Mask, Keyframe } from '@/engine/schema';
 import { generateId } from '@/engine/schema';
 import { EFFECT_DEFINITIONS, createEffect, type EffectType } from '@/engine/effects';
 
