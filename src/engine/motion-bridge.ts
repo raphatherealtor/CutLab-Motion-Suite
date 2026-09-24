@@ -146,10 +146,25 @@ export function motionTransactionToStudioOps(
       ops: motionOps as MotionTransaction['ops'],
       description: transaction.description,
     };
-    ops.push(makeOp('motion.document.patch', { documentId: docId, transaction: tx }, 'user'));
+    // Preserve provenance across the Studio boundary: an AI-authored transaction
+    // is recorded as an 'ai' op in Studio history, not silently as 'user'.
+    const actor = deriveStudioActor(motionOps);
+    ops.push(makeOp('motion.document.patch', { documentId: docId, transaction: tx }, actor));
   }
 
   return ops;
+}
+
+function deriveStudioActor(motionOps: MotionOpLike[]): OpEnvelope['actor'] {
+  const actors = new Set(
+    motionOps
+      .map((op) => (op as { actor?: string }).actor)
+      .filter((a): a is string => typeof a === 'string')
+  );
+  if (actors.has('ai')) return 'ai';
+  if (actors.has('template')) return 'system';
+  if (actors.size === 1 && actors.has('system')) return 'system';
+  return 'user';
 }
 
 // ── Motion Document Persistence Helpers ──────────────────────
@@ -307,18 +322,25 @@ export function motionTypesDocToEngineDoc(legacy: LegacyMotionDocInput): MotionD
     };
   }
 
-  // Signals: legacy {id, kind, name} → canonical {id, name, type, defaultValue};
-  // kind preserved as the canonical optional channel id so panels bind by
-  // canonical identity (no duplicate signals per bind)
+  // Signals: legacy {id, kind, name, sourceRef?, range?} → canonical engine
+  // MotionSignal. kind/sourceRef/range survive the conversion (signal identity
+  // law); defaultValue is deliberately NOT fabricated — channel signals (kind
+  // set) evaluate live from their channel, and forcing a numeric default here
+  // used to short-circuit evaluation and pin every converted signal at 0.
   const signals: MotionDocument['signals'] = {};
   for (const [sigId, rawSig] of Object.entries(legacy.signals ?? {})) {
+    const rawRange = rawSig.range as { min?: unknown; max?: unknown } | undefined;
     signals[sigId] = {
       id: (rawSig.id as string) ?? sigId,
       name: (rawSig.name as string) ?? sigId,
       type: 'number',
-      defaultValue: 0,
       expression: rawSig.expression as string | undefined,
       kind: rawSig.kind as string | undefined,
+      sourceRef: rawSig.sourceRef as string | undefined,
+      range:
+        rawRange && typeof rawRange.min === 'number' && typeof rawRange.max === 'number'
+          ? { min: rawRange.min, max: rawRange.max }
+          : undefined,
     };
   }
 
@@ -410,24 +432,6 @@ export function createMotionClipOps(params: {
     makeOp('clip.add', { sequenceId, clip }, 'user'),
   ];
 }
-
-// ── Signal Engine (singleton) ─────────────────────────────────
-
-export class SimpleSignalEngine {
-  evaluateSignals(
-    signals: Record<string, import('./motion-document').MotionSignal>,
-    _localTimeSecs: number
-  ): Record<string, number> {
-    const result: Record<string, number> = {};
-    for (const [id, sig] of Object.entries(signals)) {
-      const val = sig.currentValue ?? sig.defaultValue;
-      if (typeof val === 'number') result[id] = val;
-    }
-    return result;
-  }
-}
-
-export const studioSignalEngine = new SimpleSignalEngine();
 
 // ── Evaluate Motion Clip (for inspector/preview use) ──────────
 

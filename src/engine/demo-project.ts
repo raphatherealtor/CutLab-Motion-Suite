@@ -18,7 +18,7 @@ import { motionRegistry } from '@/motion/registry';
 import { generateMotionId } from '@/motion/utils';
 import { secondsToMotionTime } from '@/motion/types';
 import type { MotionBehavior } from '@/motion/types';
-import { createMotionDocument } from './motion-document';
+import { motionTypesDocToEngineDoc } from './motion-bridge';
 import type { MotionDocument as EngineMotionDocument } from './motion-document';
 
 
@@ -456,58 +456,12 @@ export function createDemoProject(): ProjectData {
 
   // ── Motion Documents (persisted resources) ────────────────
   // Convert registry MotionDocuments (motion/types) to engine MotionDocuments
-  // using the same conversion logic as MotionLibrary
+  // through the ONE shared converter (motion-bridge.motionTypesDocToEngineDoc) —
+  // the same conversion MotionLibrary/DemoCompositions/SVG import use, so
+  // signals (kind/sourceRef/range), keyframes, materials and cameras all survive.
 
-  function convertRegistryToEngine(regDoc: any): EngineMotionDocument {
-    const engineDoc = createMotionDocument(
-      regDoc.name,
-      { value: Math.round((regDoc.duration?.value / regDoc.duration?.timescale || 6) * 30000), timescale: 30000 },
-      regDoc.fps || 29.97,
-      regDoc.width || 1920,
-      regDoc.height || 1080
-    );
-    engineDoc.id = regDoc.id;
-    engineDoc.createdAt = regDoc.createdAt || Date.now();
-    engineDoc.updatedAt = regDoc.updatedAt || Date.now();
-
-    for (const [objId, regObj] of Object.entries(regDoc.objects || {}) as [string, any][]) {
-      const transform = regObj.transform || {};
-      const pos = transform.position || {};
-      const scale = transform.scale || {};
-      const rot = transform.rotation || {};
-      const anchor = transform.anchor || {};
-      engineDoc.objects[objId] = {
-        id: regObj.id,
-        kind: regObj.kind === 'null' ? 'null-object' : (regObj.kind || 'shape'),
-        name: regObj.name || 'Object',
-        parentId: regObj.parentId,
-        depth: regObj.depth || 0,
-        transform: {
-          x: pos.x ?? 0, y: pos.y ?? 0, z: pos.z ?? 0,
-          scaleX: scale.x ?? 1, scaleY: scale.y ?? 1, scaleZ: scale.z ?? 1,
-          rotationX: rot.x ?? 0, rotationY: rot.y ?? 0, rotationZ: rot.z ?? 0,
-          anchorX: anchor.x ?? 0, anchorY: anchor.y ?? 0, anchorZ: anchor.z ?? 0,
-          opacity: transform.opacity ?? 1,
-        },
-        keyframes: [],
-        behaviors: (regObj.behaviors || []) as any,
-        masks: [],
-        blendMode: regObj.blendMode || 'normal',
-        visible: regObj.visible !== false,
-        solo: false,
-        locked: regObj.locked || false,
-        text: regObj.textSegments?.[0]?.text ?? (regObj.kind === 'text' ? regObj.name : undefined),
-        fontSize: regObj.textSegments?.[0]?.fontSize ?? 48,
-        fontFamily: regObj.textSegments?.[0]?.fontFamily ?? 'sans-serif',
-        fontWeight: regObj.textSegments?.[0]?.fontWeight ?? 700,
-        assetRef: regObj.assetRef,
-        svgData: regObj.svgData,
-        childIds: regObj.children,
-      };
-    }
-    engineDoc.rootObjectIds = regDoc.rootObjectIds || [];
-    return engineDoc;
-  }
+  const convertRegistryToEngine = (regDoc: unknown): EngineMotionDocument =>
+    motionTypesDocToEngineDoc(regDoc as Parameters<typeof motionTypesDocToEngineDoc>[0]);
 
   const motionDocuments: Record<string, EngineMotionDocument> = {};
 

@@ -11,10 +11,12 @@ import React, { useState, useCallback } from 'react';
 import { useEngine } from '@/engine/store';
 import { resolveClipMotionDocument, motionTransactionToStudioOps } from '@/engine/motion-bridge';
 import { SIGNAL_CHANNEL_REGISTRY, createDefaultSignalMapping, PRESET_SIGNAL_GATES, evaluateSignalChannel, type SignalMapping, type SignalGate,  } from '@/engine/signal-resources';
+import { evaluateSignalKind } from '@/engine/motion-document';
 import { makeMotionOp, createMotionTransaction } from '@/motion/transaction';
 import { secondsToMotionTime, motionTimeToSeconds } from '@/motion/types';
 import { generateMotionId } from '@/motion/utils';
-import type { MotionSignal, MotionBehavior } from '@/motion/types';
+import type { MotionBehavior } from '@/motion/types';
+import type { MotionSignal as EngineMotionSignal } from '@/engine/motion-document';
 
 const CATEGORY_COLORS = {
   audio: '#3B82F6',
@@ -76,10 +78,14 @@ export default function SignalResourcePanel({ clipId }: SignalResourcePanelProps
     const sigId = generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
-    const signal: MotionSignal = {
+    // Canonical signal contract: kind carries the Studio registry channel id
+    // verbatim (dot form) — the engine channel resolver round-trips it, and no
+    // source identity is lost in the op payload.
+    const signal: EngineMotionSignal = {
       id: sigId,
-      kind: channelId.replace('.', '-') as MotionSignal['kind'],
+      kind: channelId,
       name: SIGNAL_CHANNEL_REGISTRY.find((c) => c.id === channelId)?.label ?? channelId,
+      type: 'number',
     };
     ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal }));
 
@@ -106,15 +112,17 @@ export default function SignalResourcePanel({ clipId }: SignalResourcePanelProps
     const gateSigId = generateMotionId('sig');
     const ops: ReturnType<typeof makeMotionOp>[] = [];
 
-    const primarySignal: MotionSignal = {
+    const primarySignal: EngineMotionSignal = {
       id: primarySigId,
-      kind: gate.primaryChannelId.replace('.', '-') as MotionSignal['kind'],
+      kind: gate.primaryChannelId,
       name: `${gate.label} (primary)`,
+      type: 'number',
     };
-    const gateSignal: MotionSignal = {
+    const gateSignal: EngineMotionSignal = {
       id: gateSigId,
-      kind: gate.gateChannelId.replace('.', '-') as MotionSignal['kind'],
+      kind: gate.gateChannelId,
       name: `${gate.label} (gate)`,
+      type: 'number',
     };
     ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: primarySignal }));
     ops.push(makeMotionOp('motion.upsertSignal', doc.id, { signal: gateSignal }));
@@ -339,12 +347,11 @@ export default function SignalResourcePanel({ clipId }: SignalResourcePanelProps
                   </div>
                   {signalBehaviors.map((beh) => {
                     const sig = doc.signals[beh.signalBinding!];
-                    // Canonical signals carry name/id (no legacy `kind` channel field) —
-                    // derive the channel from the signal name, e.g. "Audio Beat" -> "audio.beat".
-                    const sigChannel = sig
-                      ? (sig.name || sig.id).toLowerCase().replace(/[\s_]+/g, '-').replace('-', '.')
-                      : '';
-                    const liveVal = sigChannel ? evaluateSignalChannel(sigChannel, signalCtx) : 0;
+                    // Canonical signals carry their channel id in `kind` (either
+                    // registry dot form or legacy dash form — evaluateSignalChannel
+                    // accepts both via the engine resolver).
+                    const sigChannel = sig?.kind ?? '';
+                    const liveVal = sigChannel ? evaluateSignalKind(sigChannel, currentTimeSecs) ?? 0 : 0;
 
                     return (
                       <div key={beh.id} style={{ padding: '6px 10px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '6px' }}>

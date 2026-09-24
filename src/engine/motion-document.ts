@@ -8,6 +8,7 @@
 
 import type { RationalTime } from './time';
 import { generateId } from './schema';
+import { evaluateSignalChannel } from './signal-resources';
 
 // ── MotionObject types ────────────────────────────────────────
 
@@ -218,13 +219,25 @@ export interface MotionSignal {
   id: string;
   name: string;
   type: 'number' | 'string' | 'boolean' | 'color';
-  defaultValue: number | string | boolean;
+  /**
+   * Static fallback for signals with no driving channel. Optional: channel
+   * signals (kind set) are evaluated live from their kind and do not need one.
+   */
+  defaultValue?: number | string | boolean;
   /** Current driven value (runtime only, not persisted) */
   currentValue?: number | string | boolean;
   /** Expression driving this signal */
   expression?: string;
-  /** Legacy channel id (e.g. 'audio-beat') — retained for Motion Suite UI compatibility */
+  /**
+   * Channel id driving this signal (e.g. 'audio-beat', 'speech-emphasis').
+   * The ONE production contract: when set, evaluation resolves through the
+   * channel evaluator, not defaultValue.
+   */
   kind?: string;
+  /** Source resource reference (e.g. asset id for audio-driven signals) */
+  sourceRef?: string;
+  /** Normalization range for the driven value */
+  range?: { min: number; max: number };
 }
 
 // ── Rig / Relation (canonical) ───────────────────────────────
@@ -723,29 +736,10 @@ export function applyMotionTransaction(doc: MotionDocument, tx: MotionTransactio
 }
 
 // ── Convert MotionTransaction → Studio canonical ops ──────────
-
-import type { OpEnvelope } from './operations';
-import { makeOp } from './operations';
-
-/**
- * Convert a MotionTransaction into Studio canonical OpEnvelopes.
- * This is the ONE path through which Motion Animator edits enter the undo stack.
- * motionTransactionToStudioOps → dispatchBatch → one history entry → project revision
- */
-export function motionTransactionToStudioOps(
-  tx: MotionTransaction,
-  documentId: string
-): OpEnvelope[] {
-  // Pack the entire transaction as a single motion.document.patch op
-  // The reducer applies it atomically to the MotionDocument stored in project.motionDocuments
-  return [
-    makeOp(
-      'motion.document.patch',
-      { documentId, transaction: tx },
-      'user'
-    ),
-  ];
-}
+//
+// The single converter lives in motion-bridge.ts (motionTransactionToStudioOps).
+// It packs each document's ops as ONE 'motion.document.patch' envelope so one
+// Motion edit = one history entry. Do not reintroduce a second converter here.
 
 // ── Factory ───────────────────────────────────────────────────
 
@@ -1075,6 +1069,14 @@ export function evaluateMotionTransform(
 /**
  * Evaluate signal values from a MotionDocument's signals at a given time.
  * Returns a map of signal id → numeric value.
+ *
+ * ONE resolution order for every consumer (compositor, panels, export):
+ *   1. currentValue — runtime override, never persisted
+ *   2. kind channel — channel-driven signals evaluate live (deterministic
+ *      fixture per channel; real analysis replaces this at the same seam).
+ *      A channel wins over any static defaultValue.
+ *   3. defaultValue — static fallback (manual signals, unevaluated channels)
+ *   4. no entry
  */
 export function evaluateSignals(
   doc: MotionDocument,
@@ -1082,46 +1084,69 @@ export function evaluateSignals(
 ): Record<string, number> {
   let result: Record<string, number> = {};
   for (const [id, sig] of Object.entries(doc.signals)) {
-    const val = sig.currentValue ?? sig.defaultValue;
-    if (typeof val === 'number') {
-      result[id] = val;
-    } else if (typeof val === 'boolean') {
-      result[id] = val ? 1 : 0;
-    } else {
-      const kind = sig.kind;
-      if (kind) result[id] = evaluateSignalKind(kind, localTimeSecs);
+    if (sig.currentValue !== undefined) {
+      const cv = sig.currentValue;
+      if (typeof cv === 'number') result[id] = cv;
+      else if (typeof cv === 'boolean') result[id] = cv ? 1 : 0;
+      continue;
     }
+    if (sig.kind) {
+      const kindVal = evaluateSignalKind(sig.kind, localTimeSecs);
+      if (kindVal !== undefined) {
+        result[id] = kindVal;
+        continue;
+      }
+    }
+    const dv = sig.defaultValue;
+    if (typeof dv === 'number') result[id] = dv;
+    else if (typeof dv === 'boolean') result[id] = dv ? 1 : 0;
   }
   return result;
 }
 
-function evaluateSignalKind(kind: string, timeSecs: number): number {
-  switch (kind) {
-    case 'audio-rms': return generateDeterministicSignal(timeSecs, 'rms');
-    case 'audio-low': return generateDeterministicSignal(timeSecs, 'low');
-    case 'audio-mid': return generateDeterministicSignal(timeSecs, 'mid');
-    case 'audio-high': return generateDeterministicSignal(timeSecs, 'high');
-    case 'audio-beat': return generateBeatSignal(timeSecs, 120);
-    case 'audio-onset':
-    case 'audio-transient':
-    case 'manual':
-    default:
-      return 0;
-  }
+/**
+ * Evaluate a document signal kind (channel id) at a given time.
+ * THE ONE channel resolver: every consumer (compositor, panels, export, AI)
+ * resolves channels through here. Delegates to the Studio signal host
+ * (signal-resources.evaluateSignalChannel), which honors real analysis data
+ * when a host provides it and otherwise falls back to deterministic fixtures.
+ *
+ * Accepts both channel id conventions:
+ *   - dot ids from the Studio registry ('audio.beat', 'speech.active_word')
+ *   - dash ids used by Motion Suite signals and the legacy SignalKind union
+ *     ('audio-beat', 'speech-timing') — mapped to their registry channel.
+ * Returns undefined for channels with no evaluator (manual/expression), so
+ * callers can fall back to the signal's defaultValue.
+ */
+export function evaluateSignalKind(kind: string, timeSecs: number): number | undefined {
+  if (!kind) return undefined;
+  if (kind === 'manual' || kind === 'expression') return undefined;
+
+  const dotId = LEGACY_KIND_ALIASES[kind]
+    ?? (kind.includes('.') ? kind : kind.replace('-', '.'));
+  const val = evaluateSignalChannel(dotId, { timeSecs, clipDurationSecs: 0 });
+  return Number.isFinite(val) ? val : undefined;
 }
 
-function generateDeterministicSignal(timeSecs: number, seed: string): number {
-  const seedHash = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const freq1 = 0.5 + (seedHash % 7) * 0.3;
-  const freq2 = 1.2 + (seedHash % 5) * 0.4;
-  const phase = (seedHash % 100) / 100;
-  const v = (Math.sin(timeSecs * freq1 * Math.PI * 2 + phase) + 1) / 2 * 0.6
-    + (Math.sin(timeSecs * freq2 * Math.PI * 2) + 1) / 2 * 0.4;
-  return Math.max(0, Math.min(1, v));
-}
+/** Legacy Motion Suite channel kinds → Studio registry channel ids. */
+const LEGACY_KIND_ALIASES: Record<string, string> = {
+  'audio-rms': 'audio.rms',
+  'audio-low': 'audio.low',
+  'audio-mid': 'audio.mid',
+  'audio-high': 'audio.high',
+  'audio-beat': 'audio.beat',
+  'audio-onset': 'audio.onset',
+  'audio-transient': 'audio.transient',
+  'audio-tempo': 'audio.tempo',
+  'speech-timing': 'speech.active_word',
+  'semantic-emphasis': 'speech.emphasis',
+  'subject-bounds': 'subject.bounds_width',
+  'subject-matte': 'subject.matte',
+  'subject-tracking': 'subject.presence',
+  'marker': 'timeline.marker',
+  'cue': 'timeline.cue',
+};
 
-function generateBeatSignal(timeSecs: number, bpm: number): number {
-  const beatInterval = 60 / bpm;
-  const phase = timeSecs % beatInterval;
-  return phase < 0.05 ? 1 - phase / 0.05 : 0;
-}
+// Deterministic channel fixtures live in ONE place: signal-resources.ts
+// (evaluateSignalChannel → generateDeterministicSignal/generateBeatSignal).
+// evaluateSignalKind above delegates there — do not duplicate the math here.
