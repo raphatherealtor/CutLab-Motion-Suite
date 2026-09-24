@@ -769,7 +769,8 @@ async function runMotionWorkflowTests(runner: TestRunner): Promise<void> {
     // motion.document.patch op (the reducer is the only mutation door) —
     // the converter never re-registers a document copy.
     assert(studioOps.every(o => o.type === 'motion.document.patch'), 'includes only motion.document.patch ops');
-    assert(studioOps[0].payload.documentId === doc.id, 'patch targets the doc');
+    const patchPayload = studioOps[0].payload as import('./operations').MotionDocumentPatchPayload;
+    assert(patchPayload.documentId === doc.id, 'patch targets the doc');
   });
 
   await runner.run('motion document update reflects in resolveMotionDocument', () => {
