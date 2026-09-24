@@ -410,7 +410,10 @@ export function buildProposal(
         if (term.category === 'SIGNAL') {
           signalsInvolved.push(term.term);
           analysisDependencies.push(term.term.startsWith('audio') ? 'audio-analysis' : 'speech-timing');
-          const op: MotionOp = {
+          // Canonical signal contract: kind carries the channel id so the
+          // engine channel resolver evaluates it live (audio-rms / audio-beat /
+          // speech-active-word / speech-emphasis all resolve).
+          const signalOp: MotionOp = {
             opId: generateMotionId(),
             type: 'motion.upsertSignal',
             documentId: doc.id,
@@ -419,17 +422,42 @@ export function buildProposal(
                 id: term.term,
                 type: 'number',
                 name: term.term,
+                kind: term.term,
                 defaultValue: 0,
               },
             },
             actor: 'ai',
             createdAt: Date.now(),
           };
-          canonicalOps.push(op);
+          canonicalOps.push(signalOp);
+          // The signal only matters if something is driven by it — bind a
+          // signal-reactive behavior on the target object in the same proposal.
+          const behaviorOp: MotionOp = {
+            opId: generateMotionId(),
+            type: 'motion.addBehavior',
+            documentId: doc.id,
+            payload: {
+              objectId: objId,
+              behavior: {
+                id: generateMotionId(),
+                type: 'signal-reactive',
+                startTime: { value: 0, timescale: 30000 },
+                duration: doc.duration,
+                params: { property: 'scaleX', min: 0.9, max: 1.15 },
+                signalBinding: term.term,
+                easing: 'ease-out',
+              },
+            },
+            actor: 'ai',
+            createdAt: Date.now(),
+          };
+          canonicalOps.push(behaviorOp);
           proposedOps.push({
-            description: `Bind signal "${term.term}"`,
+            description: `Bind signal "${term.term}" and drive "${obj.name}" scale`,
+            targetObjectId: objId,
+            targetObjectName: obj.name,
             opType: 'motion.upsertSignal',
-            paramSummary: `channel: ${term.term}`,
+            paramSummary: `channel: ${term.term} → signal-reactive scaleX`,
           });
         }
       }

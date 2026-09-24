@@ -368,7 +368,7 @@ export default function MotionAnimatorOriginalShell({handoff,onReturnToStudio}:P
     drawer==='library'?<MotionLibrary/>:
     drawer==='scene'?<SceneScriptPanel/>:
     drawer==='trace'?<EvaluationTracePanel clipId={handoff.clipId} objectId={selectedId ?? undefined}/>:
-    drawer==='ai'?<AICreativeOperatorPanel workspaceKind="motion-animator" motionHandoff={handoff}/>:
+    drawer==='ai'?<AICreativeOperatorPanel workspaceKind="motion-animator" motionHandoff={handoff} onApplyProposal={(proposal)=>{bridge.commit(proposal.canonicalOps, proposal.interpretedIntent);}}/>:
     drawer==='packages'?<LibraryPackagePanel workspaceKind="motion-animator" motionHandoff={handoff}/>:
     drawer==='svg'?<SVGPossibilityPanel/>:null;
 

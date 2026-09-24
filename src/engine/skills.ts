@@ -284,6 +284,30 @@ export function skillAddLowerThird(project: ProjectData, name = 'Speaker', title
   return { ops, description: `Add Lower Third: ${name}`, editCount: ops.length };
 }
 
+// ── 15-Second Hook ────────────────────────────────────────────
+
+/**
+ * Hook skill: frame the strongest opener by setting the sequence in/out to the
+ * first 15 seconds of content. Canonical and non-destructive — the source range
+ * stays intact; in/out define the hook window.
+ */
+export function skillFifteenSecondHook(project: ProjectData): SkillResult {
+  const seq = project.sequences[project.activeSequenceId];
+  if (!seq) return empty('No active sequence');
+
+  let startSecs = Infinity;
+  for (const c of seq.clips) {
+    const s = c.startTime.value / c.startTime.timescale;
+    if (s < startSecs) startSecs = s;
+  }
+  if (!Number.isFinite(startSecs)) return empty('No clips to hook');
+
+  const inPoint = fromSeconds(startSecs, 30000);
+  const outPoint = fromSeconds(startSecs + 15, 30000);
+  const ops = [makeOp('sequence.setInOut', { sequenceId: seq.id, inPoint, outPoint }, 'skill')];
+  return { ops, description: '15-Second Hook — in/out set to first 15s of content', editCount: ops.length };
+}
+
 // ── Dispatch skill by ID ──────────────────────────────────────
 
 export function runSkill(skillId: string, project: ProjectData, params?: Record<string, any>): SkillResult {
@@ -299,6 +323,15 @@ export function runSkill(skillId: string, project: ProjectData, params?: Record<
     case 'skill-dialogue-cleanup': return skillDialogueCleanup(project);
     case 'skill-talking-head': return skillTalkingHeadCleanup(project);
     case 'skill-add-lower-third': return skillAddLowerThird(project, params?.name, params?.title);
+    case 'skill-add-titles': {
+      // Catalog id 'skill-add-titles' — places a lower third named from the
+      // first transcript speaker when available.
+      const speaker = Object.values(project.assets)
+        .flatMap((a) => a.transcriptWords ?? [])
+        .find((w) => w.speakerLabel || w.speaker);
+      return skillAddLowerThird(project, speaker?.speakerLabel ?? speaker?.speaker ?? params?.name ?? 'Speaker', params?.title ?? 'Title');
+    }
+    case 'skill-hook': return skillFifteenSecondHook(project);
     default: return empty(`Unknown skill: ${skillId}`);
   }
 }
