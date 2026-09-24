@@ -231,6 +231,151 @@ check('9c. each bind = one history entry', es.undoStack.length === sigHistoryBef
   `undoStack ${sigHistoryBefore} → ${es.undoStack.length}`);
 check('9d. still exactly ONE MotionDocument', Object.keys(es.project.motionDocuments ?? {}).length === 1);
 
+// ── 10. Locked edits fail closed ───────────────────────────────
+
+// Lock the title object through the canonical path
+const lockOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.setObjectProp', doc.id, { objectId: objId, props: { locked: true } }),
+], description: 'Lock title' }, es.project);
+es = dispatchBatch(es, lockOps, 'Lock title');
+check('10. lock commits through canonical path', resolveClipMotionDocument(es.project, motionClip!)?.objects[objId]?.locked === true);
+
+// Content edits against the locked object must NOT mutate and NOT create history entries
+const lockedBefore = es.undoStack.length;
+const lockedTransformOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.setObjectTransform', doc.id, { objectId: objId, transform: { x: 999 } }),
+], description: 'Edit locked object' }, es.project);
+const lockedTransformResult = applyOps(es.project, lockedTransformOps);
+check('10b. locked transform edit does not mutate', lockedTransformResult.didMutate === false &&
+  resolveClipMotionDocument(es.project, motionClip!)?.objects[objId]?.transform.x !== 999);
+
+const lockedKeyframeOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.keyframe.upsert', doc.id, {
+    objectId: objId,
+    keyframe: { id: 'kf-locked', time: fromSeconds(2, 30000), property: 'x', value: 5, easing: 'linear' },
+  }),
+], description: 'Keyframe locked object' }, es.project);
+const lockedKeyframeResult = applyOps(es.project, lockedKeyframeOps);
+const lockedBehaviorOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.addBehavior', doc.id, {
+    objectId: objId,
+    behavior: { id: 'beh-locked', type: 'pulse', startTime: fromSeconds(0, 30000), duration: fromSeconds(1, 30000), params: {}, easing: 'linear' },
+  }),
+], description: 'Behavior on locked object' }, es.project);
+const lockedBehaviorResult = applyOps(es.project, lockedBehaviorOps);
+check('10c. locked keyframe/behavior edits do not mutate',
+  lockedKeyframeResult.didMutate === false && lockedBehaviorResult.didMutate === false);
+es = dispatchBatch(es, lockedTransformOps, 'Edit locked object');
+es = dispatchBatch(es, lockedKeyframeOps, 'Keyframe locked object');
+es = dispatchBatch(es, lockedBehaviorOps, 'Behavior on locked object');
+check('10d. locked edits create NO history entries', es.undoStack.length === lockedBefore,
+  `undoStack ${lockedBefore} → ${es.undoStack.length}`);
+
+// The locked toggle itself must still work (otherwise the object could never be unlocked)
+const unlockOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.setObjectProp', doc.id, { objectId: objId, props: { locked: false } }),
+], description: 'Unlock title' }, es.project);
+es = dispatchBatch(es, unlockOps, 'Unlock title');
+check('10e. unlock toggle still works on locked object', resolveClipMotionDocument(es.project, motionClip!)?.objects[objId]?.locked === false);
+
+// ── 11. Stale-document ops inside a transaction are skipped ────
+
+const staleBefore = es.undoStack.length;
+const staleOnlyOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.setObjectTransform', 'mdoc-other-document', { objectId: objId, transform: { x: 123 } }),
+], description: 'Stale edit' }, es.project);
+const staleOnlyResult = applyOps(es.project, staleOnlyOps);
+check('11. stale-document transaction does not mutate', staleOnlyResult.didMutate === false);
+es = dispatchBatch(es, staleOnlyOps, 'Stale edit');
+check('11b. stale edit creates NO history entry', es.undoStack.length === staleBefore,
+  `undoStack ${staleBefore} → ${es.undoStack.length}`);
+
+// Mixed transaction: valid op applies, stale op is skipped — one entry
+const mixedOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.setObjectTransform', doc.id, { objectId: objId, transform: { x: 42 } }),
+  makeOp('motion.setObjectTransform', 'mdoc-other-document', { objectId: objId, transform: { x: -1 } }),
+], description: 'Mixed stale edit' }, es.project);
+const mixedBefore = es.undoStack.length;
+es = dispatchBatch(es, mixedOps, 'Mixed stale edit');
+const mixedDoc = resolveClipMotionDocument(es.project, motionClip!)!;
+check('11c. valid op applies while stale op is skipped',
+  es.undoStack.length === mixedBefore + 1 && mixedDoc.objects[objId].transform.x === 42,
+  `x=${mixedDoc.objects[objId].transform.x}`);
+
+// ── 12. Keyframe move / easing — drag-commit engine semantics ──
+
+const moveHistoryBefore = es.undoStack.length;
+const moveOps = motionTransactionToStudioOps({ ops: [
+  makeOp('motion.keyframe.move', doc.id, { objectId: objId, keyframeId: 'kf-1', newTime: fromSeconds(2.5, 30000) }),
+  makeOp('motion.keyframe.setEasing', doc.id, { objectId: objId, keyframeId: 'kf-1', easing: 'spring' }),
+], description: 'Drag + ease keyframe' }, es.project);
+es = dispatchBatch(es, moveOps, 'Drag + ease keyframe');
+const movedDoc = resolveClipMotionDocument(es.project, motionClip!)!;
+const movedKf = movedDoc.objects[objId].keyframes.find((k) => k.id === 'kf-1');
+check('12. keyframe move + easing apply in ONE history entry',
+  es.undoStack.length === moveHistoryBefore + 1 &&
+  movedKf !== undefined && movedKf.time.value === 75000 && movedKf.easing === 'spring',
+  `time=${movedKf?.time.value} easing=${movedKf?.easing}`);
+
+// ── 13. Registry conversion preserves signal kind/sourceRef ────
+
+import { motionTypesDocToEngineDoc } from '../src/engine/motion-bridge';
+const converted = motionTypesDocToEngineDoc({
+  id: 'mdoc-convert',
+  name: 'Convert',
+  schemaVersion: 1,
+  duration: fromSeconds(3, 30000),
+  fps: 30,
+  width: 1920,
+  height: 1080,
+  objects: {},
+  rootObjectIds: [],
+  signals: {
+    'sig-a': { id: 'sig-a', kind: 'audio-beat', name: 'Beat', sourceRef: 'asset://music.mp3', range: { min: 0, max: 1 }, sampleData: [0, 0.5, 1] },
+  },
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+} as any);
+const convertedSig = converted.signals['sig-a'];
+check('13. conversion preserves signal kind', convertedSig?.kind === 'audio-beat');
+check('13b. conversion preserves signal sourceRef', convertedSig?.sourceRef === 'asset://music.mp3');
+check('13c. conversion preserves signal range + sampleData',
+  convertedSig?.range?.min === 0 && convertedSig?.range?.max === 1 && convertedSig?.sampleData?.length === 3);
+
+// ── 14. Bound signals receive Studio channel values at eval time ──
+
+import { evaluateMotionDocument, SIGNAL_KIND_TO_CHANNEL } from '../src/engine/motion-document-utils';
+const evalDoc = createMotionDocument('Signal Eval', fromSeconds(3, 30000), 30);
+evalDoc.signals['sig-beat'] = { id: 'sig-beat', name: 'Beat', type: 'number', defaultValue: 0, kind: 'audio-beat' };
+evalDoc.objects[objId] = {
+  id: objId, kind: 'shape', name: 'Box', depth: 0,
+  transform: { ...DEFAULT_MOTION_TRANSFORM },
+  keyframes: [], behaviors: [{
+    id: 'beh-eval', type: 'signal-reactive',
+    startTime: fromSeconds(0, 30000), duration: fromSeconds(3, 30000),
+    params: { property: 'scaleX', min: 1, max: 1.2 },
+    signalBinding: 'sig-beat', easing: 'linear',
+  }], masks: [], blendMode: 'normal', visible: true, solo: false, locked: false,
+};
+evalDoc.rootObjectIds = [objId];
+
+// Studio analysis contract delivers values keyed by channel id
+const frameDriven = evaluateMotionDocument(evalDoc, 1.0, { 'audio.beat': 0.7 });
+check('14. signal id aliases channel value at evaluation',
+  Math.abs((frameDriven.signalValues['sig-beat'] ?? -1) - 0.7) < 1e-9,
+  `sig-beat=${frameDriven.signalValues['sig-beat']}`);
+const evalObj = frameDriven.objects.find((o) => o.objectId === objId);
+check('14b. signal-reactive behavior actually drives the transform',
+  evalObj !== undefined && Math.abs(evalObj.worldTransform.scaleX - 1.14) < 1e-9,
+  `scaleX=${evalObj?.worldTransform.scaleX}`);
+const frameQuiet = evaluateMotionDocument(evalDoc, 1.0, { 'audio.beat': 0 });
+const quietObj = frameQuiet.objects.find((o) => o.objectId === objId);
+check('14c. unbound channel value leaves behavior at min',
+  quietObj !== undefined && Math.abs(quietObj.worldTransform.scaleX - 1) < 1e-9,
+  `scaleX=${quietObj?.worldTransform.scaleX}`);
+check('14d. kind→channel map covers panel signal kinds',
+  SIGNAL_KIND_TO_CHANNEL['audio-beat'] === 'audio.beat' && SIGNAL_KIND_TO_CHANNEL['semantic-emphasis'] === 'speech.emphasis');
+
 // ── Summary ────────────────────────────────────────────────────
 
 console.log(`\n${failed === 0 ? 'ALL PASSED' : 'FAILURES PRESENT'} — ${passed} passed, ${failed} failed`);

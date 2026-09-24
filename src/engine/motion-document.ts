@@ -225,6 +225,12 @@ export interface MotionSignal {
   expression?: string;
   /** Legacy channel id (e.g. 'audio-beat') — retained for Motion Suite UI compatibility */
   kind?: string;
+  /** Source resource reference (e.g. asset id for audio signals) — preserved across the legacy→canonical conversion seam */
+  sourceRef?: string;
+  /** Normalization range — preserved across the legacy→canonical conversion seam */
+  range?: { min: number; max: number };
+  /** Sample data for deterministic evaluation — preserved across the legacy→canonical conversion seam */
+  sampleData?: number[];
 }
 
 // ── Rig / Relation (canonical) ───────────────────────────────
@@ -379,6 +385,14 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
   const p = op.payload as any;
   const normalizedType = normalizeMotionOpType(op.type);
 
+  // ── Fail-closed guards ─────────────────────────────────────
+  // Locked objects reject content mutations. The ONLY edit allowed on a
+  // locked object is toggling `locked` itself (otherwise it could never
+  // be unlocked). Everything else fails closed: the op is a no-op.
+  const targetLocked = (objectId: string): boolean => doc.objects[objectId]?.locked === true;
+  const isUnlockToggle = (props: Record<string, unknown>): boolean =>
+    Object.keys(props ?? {}).every((k) => k === 'locked');
+
   switch (normalizedType) {
     case 'motion.object.add': {
       const rawObj = p.object as MotionObject;
@@ -406,6 +420,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
       return newDoc;
     }
     case 'motion.object.remove': {
+      if (targetLocked(p.objectId)) return doc; // fail closed
       const { [p.objectId]: removed, ...restObjects } = doc.objects;
       return {
         ...doc,
@@ -416,6 +431,8 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.object.setProps': {
       const existing = doc.objects[p.objectId];
       if (!existing) return doc;
+      // Locked objects only accept the locked toggle itself — fail closed otherwise.
+      if (existing.locked && !isUnlockToggle(p.props)) return doc;
       return {
         ...doc,
         objects: { ...doc.objects, [p.objectId]: { ...existing, ...p.props } },
@@ -424,6 +441,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.object.setTransform': {
       const existing = doc.objects[p.objectId];
       if (!existing) return doc;
+      if (existing.locked) return doc; // fail closed
       return {
         ...doc,
         objects: {
@@ -433,6 +451,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
       };
     }
     case 'motion.object.reorder': {
+      if (targetLocked(p.objectId)) return doc; // fail closed
       const ids = [...doc.rootObjectIds];
       const idx = ids.indexOf(p.objectId);
       if (idx < 0) return doc;
@@ -443,6 +462,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.keyframe.upsert': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       const existing = obj.keyframes.findIndex((k) => k.id === p.keyframe.id);
       let newKfs: MotionKeyframe[];
       if (existing >= 0) {
@@ -459,6 +479,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.keyframe.remove': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -470,6 +491,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.keyframe.move': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -486,6 +508,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.keyframe.setEasing': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -502,6 +525,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.behavior.upsert': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       const behaviors = obj.behaviors ?? [];
       const existingIdx = behaviors.findIndex((b) => b.id === p.behavior.id);
       let newBehaviors: MotionBehavior[];
@@ -519,6 +543,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.behavior.remove': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -535,6 +560,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
       // legacy 'motion.setBehaviorParam' alias.
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -560,6 +586,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
       const obj = doc.objects[p.objectId];
       const material = p.material as MotionMaterial | undefined;
       if (!obj || !material) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         materials: { ...doc.materials, [material.id]: material },
@@ -602,6 +629,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.mask.upsert': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       const existingIdx = obj.masks.findIndex((m) => m.id === p.mask.id);
       let newMasks: MotionMask[];
       if (existingIdx >= 0) {
@@ -618,6 +646,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.mask.remove': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -630,6 +659,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
       // Patch one existing mask — canonical target of the legacy 'motion.setMask' alias.
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -644,6 +674,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.textSegment.upsert': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       const segs = obj.textSegments ?? [];
       const existingIdx = segs.findIndex((s) => s.id === p.segment.id);
       let newSegs: MotionTextSegment[];
@@ -661,6 +692,7 @@ export function applyMotionOp(doc: MotionDocument, op: MotionOp): MotionDocument
     case 'motion.textSegment.remove': {
       const obj = doc.objects[p.objectId];
       if (!obj) return doc;
+      if (obj.locked) return doc; // fail closed — locked objects reject content edits
       return {
         ...doc,
         objects: {
@@ -710,9 +742,18 @@ function normalizeMotionOpType(type: string): MotionOpType {
 
 export function applyMotionTransaction(doc: MotionDocument, tx: MotionTransaction): MotionDocument {
   let current = doc;
+  let changed = false;
   for (const op of tx.ops) {
-    current = applyMotionOp(current, op);
+    // Stale-edit protection: ops addressed to a different document are
+    // skipped — a transaction can never mutate a document it doesn't own.
+    if (op.documentId !== doc.id) continue;
+    const next = applyMotionOp(current, op);
+    if (next !== current) changed = true;
+    current = next;
   }
+  // No-op transactions return the ORIGINAL reference so the reducer can tell
+  // "nothing happened" — rejected (locked/stale) edits create no history entry.
+  if (!changed) return doc;
   return { ...current, updatedAt: Date.now() };
 }
 

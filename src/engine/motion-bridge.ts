@@ -309,7 +309,9 @@ export function motionTypesDocToEngineDoc(legacy: LegacyMotionDocInput): MotionD
 
   // Signals: legacy {id, kind, name} → canonical {id, name, type, defaultValue};
   // kind preserved as the canonical optional channel id so panels bind by
-  // canonical identity (no duplicate signals per bind)
+  // canonical identity (no duplicate signals per bind).
+  // sourceRef / range / sampleData are carried across the seam unchanged so
+  // signal provenance survives template/demo/SVG ingestion.
   const signals: MotionDocument['signals'] = {};
   for (const [sigId, rawSig] of Object.entries(legacy.signals ?? {})) {
     signals[sigId] = {
@@ -319,6 +321,9 @@ export function motionTypesDocToEngineDoc(legacy: LegacyMotionDocInput): MotionD
       defaultValue: 0,
       expression: rawSig.expression as string | undefined,
       kind: rawSig.kind as string | undefined,
+      sourceRef: rawSig.sourceRef as string | undefined,
+      range: rawSig.range as { min: number; max: number } | undefined,
+      sampleData: rawSig.sampleData as number[] | undefined,
     };
   }
 

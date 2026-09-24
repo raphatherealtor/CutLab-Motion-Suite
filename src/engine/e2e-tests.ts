@@ -765,7 +765,13 @@ async function runMotionWorkflowTests(runner: TestRunner): Promise<void> {
     const transaction = createMotionTransaction('Update doc name', [motionOp]);
     const studioOps = motionTransactionToStudioOps(transaction, state);
     assert(studioOps.length > 0, 'motionTransactionToStudioOps produces ops');
-    assert(studioOps.some(o => o.type === 'motion.document.register'), 'includes motion.document.register');
+    // Canonical seam: ONE motion.document.patch op — one Studio history entry.
+    assert(studioOps.some(o => o.type === 'motion.document.patch'), 'includes motion.document.patch');
+    // Applying the packed op through the reducer updates the stored document
+    const patchResult = applyOps(state, studioOps);
+    const patchedDoc = patchResult.state.motionDocuments?.[doc.id];
+    assertDefined(patchedDoc, 'document still registered after patch');
+    assert(patchedDoc!.name === 'Updated Name', 'patch applied through reducer updates document');
   });
 
   await runner.run('motion document update reflects in resolveMotionDocument', () => {

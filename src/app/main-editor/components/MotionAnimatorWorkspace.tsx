@@ -19,6 +19,8 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useEngine } from '@/engine/store';
 import {
   motionTransactionToStudioOps,
+  studioTimeToMotionTime,
+  motionLocalTimeToStudioSequenceTime,
   type MotionOpLike,
   type MotionTransactionLike,
 } from '@/engine/motion-bridge';
@@ -386,10 +388,14 @@ function ObjectHierarchyPanel({
 function PropertiesPanel({
   doc,
   selectedObject,
+  playheadSecs,
+  fps,
   onApplyOps,
 }: {
   doc: MotionDocument;
   selectedObject: MotionObject | null;
+  playheadSecs: number;
+  fps: number;
   onApplyOps: (ops: ReturnType<typeof makeOp>[], description: string) => void;
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set(['behaviors', 'masks']));
@@ -405,8 +411,10 @@ function PropertiesPanel({
   // Build property groups from canonical object — no local copy
   const groups = buildPropertyGroups(selectedObject, doc.id);
   const t = selectedObject.transform;
+  const isLocked = selectedObject.locked === true;
 
   const updateTransform = (prop: string, value: number) => {
+    if (isLocked) return; // fail closed — mirror of the canonical locked guard
     // Engine uses flat transform: x, y, z, scaleX, scaleY, rotationZ, opacity, etc.
     const newTransform = { ...t, [prop]: value };
     onApplyOps(
@@ -416,10 +424,43 @@ function PropertiesPanel({
   };
 
   const updateProp = (key: string, value: unknown) => {
+    if (isLocked && key !== 'locked') return; // fail closed
     onApplyOps(
       [makeOp('motion.setObjectProp', doc.id, { objectId: selectedObject.id, props: { [key]: value } })],
       `Set ${selectedObject.name} ${key}`
     );
+  };
+
+  // ── Keyframe toggle (◆) ───────────────────────────────────
+  // If a keyframe for this property exists at the current playhead time,
+  // remove it; otherwise upsert one with the property's current value.
+  // One click = one MotionOp = one Studio history entry.
+  const keyframeAtPlayhead = (property: string) =>
+    selectedObject.keyframes.find(
+      (k) => k.property === property && Math.abs(motionTimeToSeconds(k.time) - playheadSecs) < 0.5 / fps
+    );
+
+  const toggleKeyframe = (property: string, value: number) => {
+    if (isLocked) return; // fail closed
+    const existing = keyframeAtPlayhead(property);
+    if (existing) {
+      onApplyOps(
+        [makeOp('motion.keyframe.remove', doc.id, { objectId: selectedObject.id, keyframeId: existing.id })],
+        `Remove ${property} keyframe`
+      );
+    } else {
+      const kf = {
+        id: generateMotionId('mkf'),
+        time: secondsToMotionTime(playheadSecs),
+        property,
+        value,
+        easing: 'ease-in-out' as const,
+      };
+      onApplyOps(
+        [makeOp('motion.keyframe.upsert', doc.id, { objectId: selectedObject.id, keyframe: kf })],
+        `Keyframe ${selectedObject.name} ${property}`
+      );
+    }
   };
 
   const toggleGroupCollapse = (groupId: string) => {
@@ -436,6 +477,12 @@ function PropertiesPanel({
         INSPECTOR — {selectedObject.name}
         <span style={{ marginLeft: '6px', fontSize: '9px', color: 'var(--color-subtle)' }}>{selectedObject.kind}</span>
       </div>
+
+      {isLocked && (
+        <div style={{ margin: '6px 8px', padding: '5px 8px', fontSize: '10px', color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '4px' }}>
+          🔒 Locked — content edits are blocked. Toggle Locked OFF to edit.
+        </div>
+      )}
 
       {groups.map((group) => {
         const isCollapsed = collapsedGroups.has(group.id);
@@ -454,12 +501,16 @@ function PropertiesPanel({
                 {group.properties.map((prop) => {
                   if (prop.type === 'boolean') {
                     const boolVal = prop.key === 'visible' ? selectedObject.visible : selectedObject.locked;
+                    // The locked toggle must stay editable even when locked
+                    // (otherwise the object could never be unlocked).
+                    const boolDisabled = isLocked && prop.key !== 'locked';
                     return (
                       <div key={prop.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 8px' }}>
                         <span style={{ fontSize: '10px', color: 'var(--color-muted)', flex: 1 }}>{prop.label}</span>
                         <button
                           onClick={() => updateProp(prop.key, !boolVal)}
-                          style={{ background: boolVal ? 'rgba(59,130,255,0.2)' : 'var(--color-well)', border: `1px solid ${boolVal ? 'rgba(59,130,255,0.4)' : 'var(--color-border)'}`, borderRadius: '3px', padding: '2px 8px', fontSize: '10px', color: boolVal ? '#3b82ff' : 'var(--color-muted)', cursor: 'pointer', fontFamily: 'var(--font-sans)' }}
+                          disabled={boolDisabled}
+                          style={{ background: boolVal ? 'rgba(59,130,255,0.2)' : 'var(--color-well)', border: `1px solid ${boolVal ? 'rgba(59,130,255,0.4)' : 'var(--color-border)'}`, borderRadius: '3px', padding: '2px 8px', fontSize: '10px', color: boolVal ? '#3b82ff' : 'var(--color-muted)', cursor: boolDisabled ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)', opacity: boolDisabled ? 0.5 : 1 }}
                         >
                           {boolVal ? 'ON' : 'OFF'}
                         </button>
@@ -478,6 +529,7 @@ function PropertiesPanel({
 
                   // Number
                   const numVal = typeof prop.value === 'number' ? prop.value : 0;
+                  const hasKfHere = !!keyframeAtPlayhead(prop.key);
                   return (
                     <div key={prop.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 8px' }}>
                       <span style={{ fontSize: '10px', color: prop.hasKeyframes ? 'var(--color-accent)' : 'var(--color-muted)', width: '60px', flexShrink: 0 }}>
@@ -490,6 +542,7 @@ function PropertiesPanel({
                         min={prop.min}
                         max={prop.max}
                         step={prop.step ?? 0.1}
+                        disabled={isLocked}
                         onChange={(e) => {
                           const v = parseFloat(e.target.value) || 0;
                           if (prop.opType === 'motion.setObjectTransform') {
@@ -498,9 +551,18 @@ function PropertiesPanel({
                             updateProp(prop.key, v);
                           }
                         }}
-                        style={{ flex: 1, background: 'var(--color-well)', border: '1px solid var(--color-border)', borderRadius: '3px', padding: '2px 5px', fontSize: '11px', color: 'var(--color-fg)', fontFamily: 'monospace' }}
+                        style={{ flex: 1, background: 'var(--color-well)', border: '1px solid var(--color-border)', borderRadius: '3px', padding: '2px 5px', fontSize: '11px', color: 'var(--color-fg)', fontFamily: 'monospace', opacity: isLocked ? 0.5 : 1 }}
                         aria-label={prop.label}
                       />
+                      <button
+                        onClick={() => toggleKeyframe(prop.key, numVal)}
+                        disabled={isLocked}
+                        title={hasKfHere ? 'Remove keyframe at playhead' : 'Add keyframe at playhead'}
+                        aria-label={`Toggle keyframe for ${prop.label}`}
+                        style={{ background: hasKfHere ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.08)', border: `1px solid ${hasKfHere ? 'rgba(139,92,246,0.6)' : 'rgba(139,92,246,0.2)'}`, borderRadius: '3px', color: hasKfHere ? '#c4b5fd' : 'var(--color-subtle)', fontSize: '9px', padding: '2px 5px', cursor: isLocked ? 'not-allowed' : 'pointer', flexShrink: 0, opacity: isLocked ? 0.4 : 1 }}
+                      >
+                        {hasKfHere ? '◆' : '◇'}
+                      </button>
                     </div>
                   );
                 })}
@@ -515,7 +577,16 @@ function PropertiesPanel({
 
 // ── Graph Curve Editor ────────────────────────────────────────
 // Driven by real GraphCurveTrackViewModel from buildGraphCurveTracks()
-// Edits produce canonical MotionOps (motion.upsertKeyframe)
+// Edits produce canonical MotionOps (motion.keyframe.move / setEasing / remove)
+// Drag: draft during drag (local visual only), ONE commit on release.
+
+const EASING_OPTIONS = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'hold', 'spring', 'bounce', 'elastic'] as const;
+
+interface KfDragState {
+  keyframeId: string;
+  property: string;
+  draftTimeSecs: number;
+}
 
 function CurveEditor({
   doc,
@@ -530,6 +601,18 @@ function CurveEditor({
   onApplyOps: (ops: ReturnType<typeof makeOp>[], description: string) => void;
   onToggleKeyframe: (kfId: string, additive: boolean) => void;
 }) {
+  // Draft-only drag state — never canonical until committed on release
+  const [kfDrag, setKfDrag] = useState<KfDragState | null>(null);
+  const graphAreaRef = useRef<HTMLDivElement>(null);
+
+  const durationSecs = motionTimeToSeconds(doc.duration);
+  const isLocked = selectedObject?.locked === true;
+  // Build real curve tracks from canonical keyframes — no DEMO_TRACKS
+  const curveTracks = useMemo(
+    () => selectedObject ? buildGraphCurveTracks(selectedObject, durationSecs, selection.selectedCurveTrackIds) : [],
+    [selectedObject, durationSecs, selection.selectedCurveTrackIds]
+  );
+
   if (!selectedObject) {
     return (
       <div style={{ padding: '16px', textAlign: 'center', fontSize: '11px', color: 'var(--color-muted)' }}>
@@ -538,12 +621,42 @@ function CurveEditor({
     );
   }
 
-  const durationSecs = motionTimeToSeconds(doc.duration);
-  // Build real curve tracks from canonical keyframes — no DEMO_TRACKS
-  const curveTracks = useMemo(
-    () => buildGraphCurveTracks(selectedObject, durationSecs, selection.selectedCurveTrackIds),
-    [selectedObject, durationSecs, selection.selectedCurveTrackIds]
-  );
+  const commitMove = (drag: KfDragState) => {
+    if (isLocked) return; // fail closed
+    const clamped = Math.max(0, Math.min(durationSecs, drag.draftTimeSecs));
+    onApplyOps(
+      [makeOp('motion.keyframe.move', doc.id, {
+        objectId: selectedObject.id,
+        keyframeId: drag.keyframeId,
+        newTime: secondsToMotionTime(clamped),
+      })],
+      `Move keyframe to ${clamped.toFixed(2)}s`
+    );
+  };
+
+  const handleDragMove = (clientX: number) => {
+    if (!kfDrag) return;
+    const rect = graphAreaRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || durationSecs <= 0) return;
+    const normX = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    setKfDrag({ ...kfDrag, draftTimeSecs: normX * durationSecs });
+  };
+
+  const setEasing = (keyframeId: string, easing: string) => {
+    if (isLocked) return; // fail closed
+    onApplyOps(
+      [makeOp('motion.keyframe.setEasing', doc.id, { objectId: selectedObject.id, keyframeId, easing })],
+      'Set keyframe easing'
+    );
+  };
+
+  const removeKeyframe = (keyframeId: string) => {
+    if (isLocked) return; // fail closed
+    onApplyOps(
+      [makeOp('motion.keyframe.remove', doc.id, { objectId: selectedObject.id, keyframeId })],
+      'Remove keyframe'
+    );
+  };
 
   return (
     <div style={{ height: '100%', overflowY: 'auto' }}>
@@ -552,10 +665,16 @@ function CurveEditor({
         <span style={{ fontSize: '9px', color: 'var(--color-subtle)' }}>{curveTracks.length} tracks</span>
       </div>
 
+      {isLocked && (
+        <div style={{ margin: '6px 8px', padding: '5px 8px', fontSize: '10px', color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '4px' }}>
+          🔒 Locked — keyframe edits are blocked.
+        </div>
+      )}
+
       {curveTracks.length === 0 ? (
         <div style={{ padding: '24px', textAlign: 'center' }}>
           <div style={{ fontSize: '11px', color: 'var(--color-muted)', marginBottom: '8px' }}>No keyframes on this object</div>
-          <div style={{ fontSize: '10px', color: 'var(--color-subtle)' }}>Add keyframes via the Properties panel or behaviors</div>
+          <div style={{ fontSize: '10px', color: 'var(--color-subtle)' }}>Add keyframes with the ◇ button in the Props panel</div>
         </div>
       ) : (
         curveTracks.map((track) => (
@@ -567,18 +686,28 @@ function CurveEditor({
               </span>
             </div>
 
-            {/* Curve visualization */}
-            <div style={{ position: 'relative', height: '60px', margin: '4px 8px', background: 'var(--color-well)', borderRadius: '3px', overflow: 'hidden' }}>
+            {/* Curve visualization — pointer handlers draft locally, commit on release */}
+            <div
+              ref={graphAreaRef}
+              style={{ position: 'relative', height: '60px', margin: '4px 8px', background: 'var(--color-well)', borderRadius: '3px', overflow: 'hidden', touchAction: 'none' }}
+              onPointerMove={(e) => { if (kfDrag) { e.preventDefault(); handleDragMove(e.clientX); } }}
+              onPointerUp={() => { if (kfDrag) { commitMove(kfDrag); setKfDrag(null); } }}
+              onPointerLeave={() => { if (kfDrag) { commitMove(kfDrag); setKfDrag(null); } }}
+            >
               <svg width="100%" height="100%" viewBox="0 0 300 60" preserveAspectRatio="none">
                 {/* Grid */}
                 <line x1="0" y1="30" x2="300" y2="30" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
                 <line x1="0" y1="15" x2="300" y2="15" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
                 <line x1="0" y1="45" x2="300" y2="45" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
 
-                {/* Curve line */}
+                {/* Curve line (draft position while dragging) */}
                 {track.keyframes.length > 1 && (
                   <polyline
-                    points={track.keyframes.map((kf) => `${kf.normalizedX * 300},${(1 - kf.normalizedY) * 60}`).join(' ')}
+                    points={track.keyframes.map((kf) => {
+                      const t = kfDrag && kfDrag.keyframeId === kf.id ? kfDrag.draftTimeSecs : kf.timeSecs;
+                      const normX = durationSecs > 0 ? Math.max(0, Math.min(1, t / durationSecs)) : 0;
+                      return `${normX * 300},${(1 - kf.normalizedY) * 60}`;
+                    }).join(' ')}
                     fill="none"
                     stroke={`${track.color}80`}
                     strokeWidth="1.5"
@@ -587,9 +716,11 @@ function CurveEditor({
 
                 {/* Keyframe dots */}
                 {track.keyframes.map((kf) => {
-                  const cx = kf.normalizedX * 300;
+                  const t = kfDrag && kfDrag.keyframeId === kf.id ? kfDrag.draftTimeSecs : kf.timeSecs;
+                  const normX = durationSecs > 0 ? Math.max(0, Math.min(1, t / durationSecs)) : 0;
+                  const cx = normX * 300;
                   const cy = (1 - kf.normalizedY) * 60;
-                  const isKfSelected = selection.selectedKeyframeIds.has(kf.id);
+                  const isKfSelected = selection.selectedKeyframeIds.has(kf.id) || kfDrag?.keyframeId === kf.id;
                   return (
                     <circle
                       key={kf.id}
@@ -599,15 +730,21 @@ function CurveEditor({
                       fill={isKfSelected ? '#fff' : track.color}
                       stroke={isKfSelected ? track.color : 'none'}
                       strokeWidth="1.5"
-                      style={{ cursor: 'pointer' }}
+                      style={{ cursor: isLocked ? 'not-allowed' : 'grab' }}
                       onClick={(e) => onToggleKeyframe(kf.id, e.shiftKey)}
+                      onPointerDown={(e) => {
+                        if (isLocked) return;
+                        e.preventDefault();
+                        onToggleKeyframe(kf.id, e.shiftKey);
+                        setKfDrag({ keyframeId: kf.id, property: track.property, draftTimeSecs: kf.timeSecs });
+                      }}
                     />
                   );
                 })}
               </svg>
             </div>
 
-            {/* Keyframe list */}
+            {/* Keyframe list — easing + delete are canonical edits */}
             {track.keyframes.map((kf) => (
               <div
                 key={kf.id}
@@ -616,15 +753,36 @@ function CurveEditor({
                   gap: '6px',
                   padding: '2px 8px',
                   fontSize: '10px',
+                  alignItems: 'center',
                   color: selection.selectedKeyframeIds.has(kf.id) ? 'var(--color-fg)' : 'var(--color-muted)',
                   background: selection.selectedKeyframeIds.has(kf.id) ? 'rgba(59,130,255,0.08)' : 'transparent',
                   cursor: 'pointer',
                 }}
                 onClick={(e) => onToggleKeyframe(kf.id, e.shiftKey)}
               >
-                <span style={{ fontFamily: 'monospace', color: track.color, minWidth: '40px' }}>{kf.timeSecs.toFixed(2)}s</span>
+                <span style={{ fontFamily: 'monospace', color: track.color, minWidth: '40px' }}>
+                  {(kfDrag && kfDrag.keyframeId === kf.id ? kfDrag.draftTimeSecs : kf.timeSecs).toFixed(2)}s
+                </span>
                 <span style={{ flex: 1 }}>{kf.value.toFixed(3)}</span>
-                <span style={{ color: 'var(--color-subtle)' }}>{kf.easing}</span>
+                <select
+                  value={kf.easing}
+                  disabled={isLocked}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setEasing(kf.id, e.target.value)}
+                  style={{ background: 'var(--color-well)', border: '1px solid var(--color-border)', borderRadius: '3px', color: 'var(--color-fg)', fontSize: '9px', padding: '1px 3px', fontFamily: 'var(--font-sans)', opacity: isLocked ? 0.5 : 1 }}
+                  aria-label={`Easing for keyframe at ${kf.timeSecs.toFixed(2)}s`}
+                >
+                  {EASING_OPTIONS.map((ez) => <option key={ez} value={ez}>{ez}</option>)}
+                </select>
+                <button
+                  onClick={(e) => { e.stopPropagation(); removeKeyframe(kf.id); }}
+                  disabled={isLocked}
+                  title="Delete keyframe"
+                  aria-label={`Delete keyframe at ${kf.timeSecs.toFixed(2)}s`}
+                  style={{ background: 'none', border: 'none', cursor: isLocked ? 'not-allowed' : 'pointer', color: 'var(--color-danger)', fontSize: '11px', padding: '0 2px', opacity: isLocked ? 0.4 : 1 }}
+                >
+                  ×
+                </button>
               </div>
             ))}
           </div>
@@ -790,6 +948,7 @@ function BehaviorsPanel({
   }
 
   const behaviors = selectedObject.behaviors ?? [];
+  const isLocked = selectedObject.locked === true;
 
   const BEHAVIOR_PRESETS = [
     { type: 'fade-in', label: 'Fade In', color: '#3b82ff' },
@@ -804,6 +963,7 @@ function BehaviorsPanel({
   ] as const;
 
   const addBehavior = (type: string) => {
+    if (isLocked) return; // fail closed
     const beh: MotionBehavior = {
       id: generateMotionId('beh'),
       type: type as MotionBehavior['type'],
@@ -819,6 +979,7 @@ function BehaviorsPanel({
   };
 
   const removeBehavior = (behaviorId: string) => {
+    if (isLocked) return; // fail closed
     onApplyOps(
       [makeOp('motion.removeBehavior', doc.id, { objectId: selectedObject.id, behaviorId })],
       `Remove behavior`
@@ -843,8 +1004,9 @@ function BehaviorsPanel({
               </span>
               <button
                 onClick={() => removeBehavior(beh.id)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', fontSize: '12px', padding: '0 2px' }}
-                title="Remove behavior"
+                disabled={isLocked}
+                style={{ background: 'none', border: 'none', cursor: isLocked ? 'not-allowed' : 'pointer', color: 'rgba(255,255,255,0.3)', fontSize: '12px', padding: '0 2px', opacity: isLocked ? 0.4 : 1 }}
+                title={isLocked ? 'Locked — behavior edits are blocked' : 'Remove behavior'}
               >
                 ×
               </button>
@@ -860,7 +1022,8 @@ function BehaviorsPanel({
             <button
               key={preset.type}
               onClick={() => addBehavior(preset.type)}
-              style={{ background: 'var(--color-well)', border: `1px solid ${preset.color}30`, borderRadius: '4px', padding: '4px 8px', fontSize: '10px', color: preset.color, cursor: 'pointer', fontFamily: 'var(--font-sans)' }}
+              disabled={isLocked}
+              style={{ background: 'var(--color-well)', border: `1px solid ${preset.color}30`, borderRadius: '4px', padding: '4px 8px', fontSize: '10px', color: preset.color, cursor: isLocked ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)', opacity: isLocked ? 0.4 : 1 }}
             >
               {preset.label}
             </button>
@@ -903,7 +1066,10 @@ function MaterialsPanel({
     { id: 'projector', label: 'Projector', color: '#10b981' },
   ];
 
+  const isLocked = selectedObject.locked === true;
+
   const setMaterial = (type: string) => {
+    if (isLocked) return; // fail closed
     const mat: MotionMaterial = {
       id: generateMotionId('mat'),
       name: type,
@@ -945,7 +1111,8 @@ function MaterialsPanel({
             <button
               key={preset.id}
               onClick={() => setMaterial(preset.id)}
-              style={{ background: 'var(--color-well)', border: `1px solid ${material?.type === preset.id ? preset.color : 'var(--color-border)'}`, borderRadius: '4px', padding: '6px 4px', fontSize: '9px', color: material?.type === preset.id ? preset.color : 'var(--color-muted)', cursor: 'pointer', fontFamily: 'var(--font-sans)', textAlign: 'center' }}
+              disabled={isLocked}
+              style={{ background: 'var(--color-well)', border: `1px solid ${material?.type === preset.id ? preset.color : 'var(--color-border)'}`, borderRadius: '4px', padding: '6px 4px', fontSize: '9px', color: material?.type === preset.id ? preset.color : 'var(--color-muted)', cursor: isLocked ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)', textAlign: 'center', opacity: isLocked ? 0.4 : 1 }}
             >
               {preset.label}
             </button>
@@ -960,11 +1127,13 @@ function MaterialsPanel({
             <input
               type="color"
               value={materialColorHex}
+              disabled={isLocked}
               onChange={(e) => {
+                if (isLocked) return; // fail closed
                 const updatedMat = { ...material, color: e.target.value };
                 onApplyOps([makeOp('motion.setMaterial', doc.id, { objectId: selectedObject.id, material: updatedMat })], `Set ${selectedObject.name} color`);
               }}
-              style={{ width: '32px', height: '32px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: 'none' }}
+              style={{ width: '32px', height: '32px', border: 'none', borderRadius: '4px', cursor: isLocked ? 'not-allowed' : 'pointer', background: 'none', opacity: isLocked ? 0.4 : 1 }}
               aria-label="Material color"
             />
           </div>
@@ -1091,7 +1260,7 @@ export default function MotionAnimatorWorkspace({
   onReturnToStudio,
 }: MotionAnimatorWorkspaceProps) {
   const engine = useEngine();
-  const { project, dispatchBatch } = engine;
+  const { project, dispatchBatch, session, updateSession } = engine;
 
   // Resolve MotionDocument from canonical Studio project — no copy, no mock
   const doc = resolveMotionDocument(project, handoff.motionDocumentId);
@@ -1108,13 +1277,37 @@ export default function MotionAnimatorWorkspace({
     createEphemeralTrackState()
   );
 
-  // Transport — clip-local time for authoring convenience
-  // Studio RationalTime → clip-local conversion happens in evaluateMotionClip
-  const [playheadSecs, setPlayheadSecs] = useState(handoff.clipLocalTimeSecs);
-  const [playing, setPlaying] = useState(false);
+  // ── Transport: Studio session is the ONE time authority ──────
+  // No local playhead state. No local playback interval. The Motion Suite
+  // derives clip-local time from Studio session.playheadFrame, and playback
+  // toggles Studio session.playing — the same canonical clock ViewerPanel
+  // drives via usePlaybackClock. Scrubbing seeks the Studio playhead.
+  const clip = engine.activeSequence?.clips.find((c) => c.id === handoff.clipId) ?? null;
+  const seqFps = engine.activeSequence?.format.fps ?? handoff.sequenceFormat?.fps ?? 29.97;
+  const clipStartSecs = clip ? motionTimeToSeconds(clip.startTime) : handoff.clipStartSecs;
+  const clipDurSecs = clip ? motionTimeToSeconds(clip.duration) : handoff.clipDurationSecs;
+  const seqTimeSecs = session.playheadFrame / seqFps;
+  // Clip-local authoring time — derived, never owned here.
+  const playheadSecs = clip
+    ? studioTimeToMotionTime(seqTimeSecs, clip)
+    : Math.max(0, Math.min(clipDurSecs, seqTimeSecs - clipStartSecs));
+  const playing = session.playing;
+
   const [frameState, setFrameState] = useState<FrameState | null>(null);
   const [hadEdits, setHadEdits] = useState(false);
-  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Seek: clip-local seconds → Studio sequence frame (canonical session update)
+  const seekLocal = useCallback((localSecs: number) => {
+    const clamped = Math.max(0, Math.min(clipDurSecs, localSecs));
+    const seqSecs = clip
+      ? motionLocalTimeToStudioSequenceTime(clamped, clip)
+      : clipStartSecs + clamped;
+    updateSession({ playing: false, playheadFrame: Math.round(seqSecs * seqFps) });
+  }, [clip, clipStartSecs, clipDurSecs, seqFps, updateSession]);
+
+  const togglePlayback = useCallback(() => {
+    updateSession({ playing: !session.playing });
+  }, [session.playing, updateSession]);
 
   // Initialize selection from doc root if nothing selected
   useEffect(() => {
@@ -1127,41 +1320,18 @@ export default function MotionAnimatorWorkspace({
   // Uses the same StudioAnalysisContract as Studio — ONE analysis truth
   useEffect(() => {
     if (!doc) return;
-    const clip = engine.activeSequence?.clips.find((c) => c.id === handoff.clipId);
     if (!clip) return;
 
     const contract = buildAnalysisContract(
       project,
       engine.activeSequence,
-      Math.round((handoff.clipStartSecs + playheadSecs) * (handoff.sequenceFormat?.fps ?? 29.97)),
+      Math.round(seqTimeSecs * seqFps),
       handoff.clipId
     );
     const signalValues = contractToSignalValues(contract);
-    const fs = evaluateMotionClip(project, clip, handoff.clipStartSecs + playheadSecs, signalValues);
+    const fs = evaluateMotionClip(project, clip, seqTimeSecs, signalValues);
     setFrameState(fs);
-  }, [playheadSecs, doc?.updatedAt, project.revision]);
-
-  // Playback loop (clip-local, authoring convenience only)
-  useEffect(() => {
-    if (playing && doc) {
-      const durationSecs = motionTimeToSeconds(doc.duration);
-      playIntervalRef.current = setInterval(() => {
-        setPlayheadSecs((prev) => {
-          const next = prev + 1 / (doc.fps || 30);
-          if (next >= durationSecs) {
-            setPlaying(false);
-            return 0;
-          }
-          return next;
-        });
-      }, 1000 / (doc.fps || 30));
-    } else {
-      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-    }
-    return () => {
-      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-    };
-  }, [playing, doc?.fps, doc?.duration]);
+  }, [session.playheadFrame, doc?.updatedAt, project.revision]);
 
   // THE ONE commit path: MotionOp[] → MotionTransaction → Studio dispatchBatch
   // Accepts MotionOpLike (canonical MotionOp OR legacy motion/types.ts MotionOp)
@@ -1384,8 +1554,8 @@ export default function MotionAnimatorWorkspace({
               renderModel={renderModel}
               transport={transport}
               playing={playing}
-              onSeek={setPlayheadSecs}
-              onPlayToggle={() => setPlaying((p) => !p)}
+              onSeek={seekLocal}
+              onPlayToggle={togglePlayback}
             />
           </div>
 
@@ -1395,7 +1565,7 @@ export default function MotionAnimatorWorkspace({
               doc={doc}
               selection={selection}
               playheadSecs={playheadSecs}
-              onSeek={setPlayheadSecs}
+              onSeek={seekLocal}
               onSelectObject={handleSelectObject}
             />
           </div>
@@ -1435,6 +1605,8 @@ export default function MotionAnimatorWorkspace({
               <PropertiesPanel
                 doc={doc}
                 selectedObject={selectedObject}
+                playheadSecs={playheadSecs}
+                fps={seqFps}
                 onApplyOps={applyOps}
               />
             )}
@@ -1469,7 +1641,7 @@ export default function MotionAnimatorWorkspace({
                 doc={doc}
                 selection={selection}
                 playheadSecs={playheadSecs}
-                onSeek={setPlayheadSecs}
+                onSeek={seekLocal}
                 onSelectObject={handleSelectObject}
               />
             )}

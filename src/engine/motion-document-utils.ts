@@ -129,6 +129,28 @@ export interface MotionObjectState {
 }
 
 /**
+ * Legacy signal kind → canonical Studio analysis channel id.
+ * Signals created by the Motion Suite panels (and legacy docs) carry their
+ * channel identity in `kind` (e.g. 'audio-beat'); the Studio analysis
+ * contract delivers values keyed by channel id (e.g. 'audio.beat').
+ * This map is the ONE translation point between the two identities.
+ */
+export const SIGNAL_KIND_TO_CHANNEL: Record<string, string> = {
+  'audio-rms': 'audio.rms',
+  'audio-low': 'audio.low',
+  'audio-mid': 'audio.mid',
+  'audio-high': 'audio.high',
+  'audio-beat': 'audio.beat',
+  'audio-onset': 'audio.onset',
+  'audio-transient': 'audio.transient',
+  'audio-tempo': 'audio.tempo',
+  'speech-timing': 'speech.active_word',
+  'semantic-emphasis': 'speech.emphasis',
+  'cue': 'timeline.cue',
+  'marker': 'timeline.marker',
+};
+
+/**
  * Evaluate a whole MotionDocument at clip-local time (no Studio clip required).
  * Used by the AI Creative Operator preview and any document-level inspection.
  * Returns a FrameState for preview/inspector use.
@@ -144,8 +166,19 @@ export function evaluateMotionDocument(
 
   const startTime = performance.now();
 
-  // Evaluate signals from doc
+  // Evaluate signals from doc, then overlay Studio-provided channel values.
   const docSignalValues = { ...evaluateSignals(doc, clampedSecs), ...signalValues };
+
+  // Bridge signal identity: behaviors bind by SIGNAL ID, but Studio delivers
+  // values by CHANNEL id. Alias each signal's value to its own id so
+  // signal-reactive behaviors actually react to the analysis contract.
+  for (const sig of Object.values(doc.signals ?? {})) {
+    if (!sig.kind) continue;
+    const channelId = SIGNAL_KIND_TO_CHANNEL[sig.kind];
+    if (channelId && signalValues[channelId] !== undefined) {
+      docSignalValues[sig.id] = signalValues[channelId];
+    }
+  }
 
   const objects: MotionObjectState[] = [];
   let keyframeCount = 0;

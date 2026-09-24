@@ -37,6 +37,11 @@ export function applyOp(state: ProjectData, envelope: OpEnvelope): ReducerResult
   }
 
   const newState = reduce(state, envelope);
+  // No-change ops (rejected/failed-closed edits) must not bump revision
+  // or create undo history entries.
+  if (newState === state) {
+    return { state, didMutate: false };
+  }
   const now = Date.now();
 
   return {
@@ -836,6 +841,9 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
       const existing = state.motionDocuments?.[documentId];
       if (!existing) return state;
       const updated = applyMotionTransaction(existing, transaction);
+      // Rejected (locked/stale/no-op) transactions return the same reference —
+      // no state change, no history entry.
+      if (updated === existing) return state;
       return {
         ...state,
         motionDocuments: { ...(state.motionDocuments ?? {}), [documentId]: updated },
