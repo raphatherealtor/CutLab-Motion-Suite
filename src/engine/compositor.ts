@@ -141,21 +141,82 @@ export function pruneCompositorCache(project: ProjectData): void {
   }
 }
 
+/**
+ * Prewarm SVG + image resources so the very first rendered frame already has
+ * decoded pixels (frame-zero correctness). SVG/image objects are drawn only
+ * when their element has loaded, so without this the first scrub/export frame
+ * drops them. Video elements get a load trigger too, but their per-frame seek
+ * already waits for a decoded frame in seekVideoToTime.
+ */
+export function prewarmCompositorAssets(project: ProjectData): Promise<void> {
+  const waits: Promise<void>[] = [];
+  const seenAssets = new Set<string>();
+
+  const prewarmAsset = (assetId: string) => {
+    if (seenAssets.has(assetId)) return;
+    seenAssets.add(assetId);
+    const asset = project.assets?.[assetId];
+    if (!asset?.runtimeUrl) return;
+    if (asset.kind === 'image') {
+      waits.push(waitForImage(getOrCreateImageElement(asset.id, asset.runtimeUrl)));
+    } else if (asset.kind === 'video') {
+      getOrCreateVideoElement(asset.id, asset.runtimeUrl); // trigger metadata + first-frame decode
+    }
+  };
+
+  // Motion object image/video/SVG resources
+  for (const doc of Object.values(project.motionDocuments ?? {})) {
+    for (const obj of Object.values(doc.objects ?? {})) {
+      if (obj.kind === 'svg' && obj.svgData) {
+        waits.push(waitForImage(getOrCreateSvgImageElement(obj.id, obj.svgData)));
+      } else if ((obj.kind === 'image' || obj.kind === 'video') && obj.assetRef) {
+        prewarmAsset(obj.assetRef);
+      }
+    }
+  }
+
+  // Timeline clip assets (image assets placed as 'video' clips, etc.)
+  const seq = project.sequences[project.activeSequenceId];
+  for (const clip of seq?.clips ?? []) {
+    if (clip.assetId) prewarmAsset(clip.assetId);
+  }
+
+  return Promise.allSettled(waits).then(() => undefined);
+}
+
+function waitForImage(img: HTMLImageElement, timeoutMs = 4000): Promise<void> {
+  return new Promise((resolve) => {
+    if (img.complete && img.naturalWidth > 0) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, timeoutMs);
+    const done = () => { clearTimeout(timer); resolve(); };
+    img.addEventListener('load', done, { once: true });
+    img.addEventListener('error', done, { once: true });
+  });
+}
+
 // ── Seek video to exact source time ──────────────────────────
 
 /**
- * Sub-frame seek tolerance. Consecutive frames at 24/30/60fps differ by
- * ≥16ms, so a ~1ms tolerance means every real frame change triggers a seek
- * while redundant re-renders of the SAME frame are skipped. The previous
- * 40ms tolerance was wider than a frame at 30fps, so consecutive export/scrub
- * frames never sought and video froze on its first decoded frame.
+ * Frame-relative seek tolerance: half a frame at the given fps. Two distinct
+ * frames are always ≥1/fps apart, so anything within half a frame is "the same
+ * frame" and can skip the seek; anything further triggers a real seek. The
+ * original 40ms tolerance was wider than a 30fps frame (33ms) and froze video
+ * on its first decoded frame during scrub/export.
  */
-const SEEK_EPSILON = 0.001;
+function seekEpsilonForFps(fps?: number): number {
+  if (fps && Number.isFinite(fps) && fps > 0) return 0.5 / fps;
+  return 0.001;
+}
 
 export function seekVideoToTime(
   video: HTMLVideoElement,
-  sourceTimeSecs: number
+  sourceTimeSecs: number,
+  fps?: number
 ): Promise<void> {
+  const epsilon = seekEpsilonForFps(fps);
   return new Promise((resolve) => {
     const target = Number.isFinite(sourceTimeSecs) ? Math.max(0, sourceTimeSecs) : 0;
     let settled = false;
@@ -174,7 +235,7 @@ export function seekVideoToTime(
     const timer = setTimeout(finish, 300);
 
     const doSeek = () => {
-      if (Math.abs(video.currentTime - target) < SEEK_EPSILON && video.readyState >= 2) {
+      if (Math.abs(video.currentTime - target) < epsilon && video.readyState >= 2) {
         finish();
         return;
       }
@@ -187,7 +248,7 @@ export function seekVideoToTime(
         return;
       }
       // Setting currentTime to its current value does not fire 'seeked'.
-      if (Math.abs(video.currentTime - target) < SEEK_EPSILON) finish();
+      if (Math.abs(video.currentTime - target) < epsilon) finish();
     };
 
     if (video.readyState < 2) {
@@ -293,7 +354,8 @@ async function renderVideoLayer(
   asset: Asset,
   canvasW: number,
   canvasH: number,
-  playing: boolean
+  playing: boolean,
+  fps: number
 ): Promise<void> {
   if (!asset.runtimeUrl) return;
 
@@ -307,7 +369,7 @@ async function renderVideoLayer(
     }
   } else {
     // Scrubbing / static frame — seek to exact source time
-    await seekVideoToTime(video, layer.sourceTimeSecs);
+    await seekVideoToTime(video, layer.sourceTimeSecs, fps);
     if (video.readyState >= 2) {
       drawVideoFrame(ctx, video, layer, asset, canvasW, canvasH);
     }
@@ -388,7 +450,8 @@ function renderMotionObject(
   canvasW: number,
   canvasH: number,
   parentAlpha = 1,
-  signalValues: Record<string, number> = {}
+  signalValues: Record<string, number> = {},
+  fps = 30
 ): void {
   if (!obj.visible) return;
 
@@ -456,9 +519,10 @@ function renderMotionObject(
           const video = getOrCreateVideoElement(asset.id, asset.runtimeUrl);
           // Map motion local time to video source time
           const videoTime = localTimeSecs * (obj.videoSpeed ?? 1) + (obj.videoTimeOffset ?? 0);
-          // Sub-frame tolerance: a 0.1s tolerance froze Motion video objects on
-          // their first decoded frame for any clip ≤10fps-adjacent time steps.
-          if (Math.abs(video.currentTime - videoTime) > SEEK_EPSILON) {
+          // Frame-relative tolerance: a fixed 0.1s tolerance froze Motion video
+          // objects on their first decoded frame; half a frame still skips same-frame
+          // re-seeks while every real frame advance triggers a seek.
+          if (Math.abs(video.currentTime - videoTime) > seekEpsilonForFps(fps)) {
             video.currentTime = Math.max(0, videoTime);
           }
           if (video.readyState >= 2) {
@@ -474,7 +538,7 @@ function renderMotionObject(
       for (const childId of childIds) {
         const child = doc.objects[childId];
         if (child) {
-          renderMotionObject(ctx, child, doc, localTimeSecs, project, canvasW, canvasH, alpha, signalValues);
+          renderMotionObject(ctx, child, doc, localTimeSecs, project, canvasW, canvasH, alpha, signalValues, fps);
         }
       }
       break;
@@ -485,7 +549,7 @@ function renderMotionObject(
       for (const childId of childIds) {
         const child = doc.objects[childId];
         if (child) {
-          renderMotionObject(ctx, child, doc, localTimeSecs, project, canvasW, canvasH, alpha, signalValues);
+          renderMotionObject(ctx, child, doc, localTimeSecs, project, canvasW, canvasH, alpha, signalValues, fps);
         }
       }
       break;
@@ -808,7 +872,7 @@ export async function renderFrame(
           if (asset.kind === 'image') {
             renderImageLayer(ctx, layer, asset, width, height);
           } else {
-            await renderVideoLayer(ctx, layer, asset, width, height, playing);
+            await renderVideoLayer(ctx, layer, asset, width, height, playing, plan.fps);
           }
         }
         break;
@@ -822,7 +886,7 @@ export async function renderFrame(
         if (layer.motionBundleId) {
           const motionDoc = project.motionDocuments?.[layer.motionBundleId];
           if (motionDoc) {
-            renderMotionDocument(ctx, motionDoc, layer, project, width, height);
+            renderMotionDocument(ctx, motionDoc, layer, project, width, height, plan.fps);
           }
         }
         break;
@@ -867,7 +931,8 @@ function renderMotionDocument(
   layer: RenderLayer,
   project: ProjectData,
   canvasW: number,
-  canvasH: number
+  canvasH: number,
+  fps: number
 ): void {
   const localTimeSecs = layer.sourceTimeSecs;
 
@@ -887,7 +952,7 @@ function renderMotionDocument(
     .sort((a, b) => a.depth - b.depth);
 
   for (const obj of rootObjects) {
-    renderMotionObject(ctx, obj, migratedDoc, localTimeSecs, project, canvasW, canvasH, 1, signalValues);
+    renderMotionObject(ctx, obj, migratedDoc, localTimeSecs, project, canvasW, canvasH, 1, signalValues, fps);
   }
 
   ctx.restore();
@@ -909,7 +974,7 @@ export async function syncVideosToTime(
     if (!asset?.runtimeUrl) return;
     if (asset.kind === 'image') return; // images are static, not seeked video elements
     const video = getOrCreateVideoElement(asset.id, asset.runtimeUrl);
-    await seekVideoToTime(video, layer.sourceTimeSecs);
+    await seekVideoToTime(video, layer.sourceTimeSecs, plan.fps);
   });
   await Promise.all(promises);
 }

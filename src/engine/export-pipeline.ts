@@ -11,7 +11,7 @@
 
 import type { ProjectData, ExportPreset } from './schema';
 import { buildRenderPlan } from './render-plan';
-import { renderFrame } from './compositor';
+import { renderFrame, prewarmCompositorAssets } from './compositor';
 import { mixdownSequence, audioBufferToWav } from './audio-mixer';
 import { toSeconds } from './time';
 
@@ -111,6 +111,9 @@ async function exportViaMediaRecorder(
     captureCtx.drawImage(renderCanvas, dx, dy, dw, dh);
   };
 
+  // ── Prewarm SVG/image resources so frame zero already has decoded pixels ──
+  await prewarmCompositorAssets(project);
+
   // ── Frame zero: render before recording begins ──
   // This ensures the recorder captures real content from the very first frame.
   const plan0 = buildRenderPlan(project, 0);
@@ -138,6 +141,9 @@ async function exportViaMediaRecorder(
       // Connect to destination stream only — NOT to audioCtx.destination (speakers)
       audioSource.connect(dest);
       audioStream = dest.stream;
+      // Establish the audio graph fully running BEFORE the recorder and frame loop
+      // progress, so the first captured video frame aligns with audio time zero.
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
     }
   } catch {
     // Audio setup failed — continue with video-only
@@ -161,6 +167,9 @@ async function exportViaMediaRecorder(
   // ── Start audio from same origin as recorder ──
   // Frame zero already rendered above. Start recorder, then start audio source.
   recorder.start(100); // collect data every 100ms
+  // Anchor the video timeline to recorder start BEFORE the audio source starts,
+  // so frame 0 (captured at recorder start) and audio sample 0 share one origin.
+  const loopStart = performance.now();
   if (audioSource && audioCtx) {
     // Start audio from time 0, synchronized with recorder start
     audioSource.start(audioCtx.currentTime);
@@ -173,7 +182,6 @@ async function exportViaMediaRecorder(
   // must stay locked to the same origin; otherwise cumulative seek/render latency makes
   // the audio finish before the video (A/V drift).
   const frameInterval = 1000 / fps;
-  const loopStart = performance.now();
   for (let f = 0; f < totalFrames; f++) {
     const plan = buildRenderPlan(project, f);
     if (plan) {

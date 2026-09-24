@@ -104,8 +104,10 @@ export class AudioPreviewEngine {
       const asset = clip.assetId ? project.assets[clip.assetId] : null;
       if (!asset?.runtimeUrl) continue;
 
+      const speed = clip.speed || 1;
       const clipStartSecs = toSeconds(clip.startTime);
-      const clipEndSecs = clipStartSecs + toSeconds(clip.duration);
+      const clipDurSecs = toSeconds(clip.duration);
+      const clipEndSecs = clipStartSecs + clipDurSecs;
 
       // Skip clips that have already ended
       if (clipEndSecs <= startSeqTimeSecs) continue;
@@ -115,7 +117,7 @@ export class AudioPreviewEngine {
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.playbackRate.value = clip.speed || 1;
+      source.playbackRate.value = speed;
 
       // Gain node for clip
       const clipGain = ctx.createGain();
@@ -143,34 +145,40 @@ export class AudioPreviewEngine {
       const seqOffset = Math.max(0, clipStartSecs - startSeqTimeSecs);
       const wallStart = ctx.currentTime + seqOffset;
 
-      // Compute source offset (how far into the source to start)
-      const sourceOffset = startSeqTimeSecs > clipStartSecs
-        ? toSeconds(clip.sourceIn) + (startSeqTimeSecs - clipStartSecs) * (clip.speed || 1)
-        : toSeconds(clip.sourceIn);
+      // Source timeline: sourceTime = sourceIn + (seqTime - clipStart) * speed.
+      // Starting mid-clip consumes only the remaining wall time.
+      const startWithinSecs = Math.max(startSeqTimeSecs, clipStartSecs);
+      const remainingWallSecs = clipEndSecs - startWithinSecs;
+      const sourceOffset = toSeconds(clip.sourceIn) + (startWithinSecs - clipStartSecs) * speed;
+      // Buffer-time duration: at playbackRate=speed, `remainingWall * speed`
+      // buffer-seconds play over exactly `remainingWall` wall-seconds.
+      const sourceDuration = remainingWallSecs * speed;
 
-      const sourceDuration = toSeconds(clip.duration) / (clip.speed || 1);
-
-      // Apply fade in automation
-      if (fadeInSecs > 0) {
+      // Apply fade in automation — only when we begin before/at the clip start,
+      // so starting mid-clip does not re-fade from silence.
+      if (fadeInSecs > 0 && startSeqTimeSecs < clipStartSecs) {
         clipGain.gain.setValueAtTime(0, wallStart);
         clipGain.gain.linearRampToValueAtTime(clipGainLinear, wallStart + fadeInSecs);
       }
 
-      // Apply fade out automation
+      // Apply fade out automation (anchored to the clip's wall-clock end)
       if (fadeOutSecs > 0) {
-        const fadeOutStart = wallStart + sourceDuration - fadeOutSecs;
-        clipGain.gain.setValueAtTime(clipGainLinear, fadeOutStart);
-        clipGain.gain.linearRampToValueAtTime(0, wallStart + sourceDuration);
+        const clipEndWall = wallStart + remainingWallSecs;
+        const fadeOutStart = clipEndWall - fadeOutSecs;
+        if (fadeOutStart > wallStart) {
+          clipGain.gain.setValueAtTime(clipGainLinear, fadeOutStart);
+          clipGain.gain.linearRampToValueAtTime(0, clipEndWall);
+        }
       }
 
-      // Apply gain keyframes
+      // Apply gain keyframes — clip-local timeline time → sequence → wall
       for (const kf of clip.keyframes.filter((k) => k.property === 'gain')) {
-        const kfWallTime = wallStart + toSeconds(kf.time) / (clip.speed || 1);
+        const kfWallTime = ctx.currentTime + (clipStartSecs + toSeconds(kf.time) - startSeqTimeSecs);
         const kfGainLinear = Math.pow(10, (kf.value as number) / 20);
-        clipGain.gain.setValueAtTime(kfGainLinear, kfWallTime);
+        if (kfWallTime >= wallStart) clipGain.gain.setValueAtTime(kfGainLinear, kfWallTime);
       }
 
-      source.start(wallStart, Math.max(0, sourceOffset), sourceDuration);
+      source.start(wallStart, Math.max(0, sourceOffset), Math.max(0, sourceDuration));
       this.activeSources.push(source);
     }
   }
@@ -282,9 +290,13 @@ export async function mixdownSequence(
       trackGainNode.connect(panNode);
       panNode.connect(masterGain);
 
+      const speed = clip.speed || 1;
       const startSecs = toSeconds(clip.startTime);
       const sourceInSecs = toSeconds(clip.sourceIn);
-      const durationSecs = toSeconds(clip.duration) / (clip.speed || 1);
+      const clipDurSecs = toSeconds(clip.duration);
+      // Buffer-time duration: at playbackRate=speed, `clipDur * speed` buffer-seconds
+      // play over exactly `clipDur` wall-seconds.
+      const durationSecs = clipDurSecs * speed;
       const fadeInSecs = toSeconds(clip.fadeIn);
       const fadeOutSecs = toSeconds(clip.fadeOut);
 
@@ -294,21 +306,24 @@ export async function mixdownSequence(
         clipGainNode.gain.linearRampToValueAtTime(clipGainLinear, startSecs + fadeInSecs);
       }
 
-      // Fade out
+      // Fade out (anchored to the clip's wall-clock end)
       if (fadeOutSecs > 0) {
-        const fadeOutStart = startSecs + durationSecs - fadeOutSecs;
-        clipGainNode.gain.setValueAtTime(clipGainLinear, fadeOutStart);
-        clipGainNode.gain.linearRampToValueAtTime(0, startSecs + durationSecs);
+        const clipEndSecs = startSecs + clipDurSecs;
+        const fadeOutStart = clipEndSecs - fadeOutSecs;
+        if (fadeOutStart > startSecs) {
+          clipGainNode.gain.setValueAtTime(clipGainLinear, fadeOutStart);
+          clipGainNode.gain.linearRampToValueAtTime(0, clipEndSecs);
+        }
       }
 
-      // Gain keyframes
+      // Gain keyframes — clip-local timeline time, no speed scaling
       for (const kf of clip.keyframes.filter((k) => k.property === 'gain')) {
-        const kfTime = startSecs + toSeconds(kf.time) / (clip.speed || 1);
+        const kfTime = startSecs + toSeconds(kf.time);
         const kfGainLinear = Math.pow(10, (kf.value as number) / 20);
         clipGainNode.gain.setValueAtTime(kfGainLinear, kfTime);
       }
 
-      source.start(startSecs, Math.max(0, sourceInSecs), durationSecs);
+      source.start(startSecs, Math.max(0, sourceInSecs), Math.max(0, durationSecs));
       scheduledCount++;
     }
 
