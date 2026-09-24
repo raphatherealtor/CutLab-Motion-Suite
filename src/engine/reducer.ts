@@ -10,8 +10,9 @@ import type { OpEnvelope } from './operations';
 import { SESSION_ONLY_OPS } from './operations';
 import { add, sub, compare, fromSeconds } from './time';
 import type { RationalTime } from './time';
-import { applyMotionTransaction } from './motion-document';
+import { applyMotionTransaction, cloneMotionDocument } from './motion-document';
 import type { MotionTransaction } from './motion-document';
+import { generateId } from './schema';
 
 export interface ReducerResult {
   state: ProjectData;
@@ -241,7 +242,28 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
       }));
     }
     case 'clip.duplicate': {
-      return mutateSeq(state, p.sequenceId, (seq) => {
+      // A duplicated motion clip gets an INDEPENDENT MotionDocument clone —
+      // two clips must never share one mutable document.
+      const seq0 = state.sequences[p.sequenceId];
+      const original0 = seq0?.clips.find((c) => c.id === p.clipId);
+      const srcDocId = original0 ? (original0.motionDocumentId ?? original0.motionBundleId) : undefined;
+      const srcDoc = srcDocId ? state.motionDocuments?.[srcDocId] : undefined;
+      let motionDocuments = state.motionDocuments ?? {};
+      let dupeDocId: string | undefined;
+      if (srcDoc && srcDocId) {
+        dupeDocId = generateId('mdoc');
+        motionDocuments = {
+          ...motionDocuments,
+          [dupeDocId]: {
+            ...cloneMotionDocument(srcDoc),
+            id: dupeDocId,
+            name: `${srcDoc.name} Copy`,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        };
+      }
+      return mutateSeq({ ...state, motionDocuments }, p.sequenceId, (seq) => {
         const original = seq.clips.find((c) => c.id === p.clipId);
         if (!original) return seq;
         const offset = fromSeconds(0.5, original.startTime.timescale);
@@ -252,6 +274,7 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
           linkGroupId: undefined,
           transitionInId: undefined,
           transitionOutId: undefined,
+          ...(dupeDocId ? { motionDocumentId: dupeDocId, motionBundleId: dupeDocId } : {}),
         };
         return { ...seq, clips: [...seq.clips, dupe] };
       });
@@ -462,11 +485,12 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
     case 'sequence.duplicate': {
       const original = state.sequences[p.sequenceId];
       if (!original) return state;
+      const docState = withIndependentMotionDocs(state, original.clips, () => generateId('mdoc'));
       const newSeq: Sequence = {
         ...original,
         id: p.newSequenceId,
         name: p.newName,
-        clips: original.clips.map((c) => ({ ...c, id: `${c.id}-dup` })),
+        clips: docState.clips.map((c) => ({ ...c, id: `${c.id}-dup` })),
         markers: original.markers.map((m) => ({ ...m, id: `${m.id}-dup` })),
         captions: original.captions.map((cap) => ({ ...cap, id: `${cap.id}-dup` })),
         transitions: original.transitions.map((t) => ({ ...t, id: `${t.id}-dup` })),
@@ -475,6 +499,7 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
       return {
         ...state,
         sequences: { ...state.sequences, [p.newSequenceId]: newSeq },
+        motionDocuments: docState.motionDocuments,
       };
     }
 
@@ -660,11 +685,12 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
       if (!original) return state;
       const originalSeq = state.sequences[original.sequenceId];
       if (!originalSeq) return state;
+      const docState = withIndependentMotionDocs(state, originalSeq.clips, () => generateId('mdoc'));
       const newSeq: Sequence = {
         ...originalSeq,
         id: p.newSequenceId,
         name: `${originalSeq.name} Copy`,
-        clips: originalSeq.clips.map((c) => ({ ...c, id: `${c.id}-dup` })),
+        clips: docState.clips.map((c) => ({ ...c, id: `${c.id}-dup` })),
       };
       const newPrecomp: Precomp = {
         ...original,
@@ -676,6 +702,7 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
         ...state,
         precomps: { ...state.precomps, [p.newPrecompId]: newPrecomp },
         sequences: { ...state.sequences, [p.newSequenceId]: newSeq },
+        motionDocuments: docState.motionDocuments,
       };
     }
 
@@ -844,9 +871,12 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
     case 'motion.document.register': {
       const { document } = env.payload as import('./operations').MotionDocumentRegisterPayload;
       if (!document) return state;
+      // Store a private deep clone — registering must never alias the caller's
+      // object (template/preview sources stay untouched by later doc edits).
+      const stored = { ...cloneMotionDocument(document), id: document.id };
       return {
         ...state,
-        motionDocuments: { ...(state.motionDocuments ?? {}), [document.id]: document },
+        motionDocuments: { ...(state.motionDocuments ?? {}), [stored.id]: stored },
       };
     }
     case 'motionDocument.upsert': {
@@ -918,4 +948,34 @@ function ensureSequenceDefaults(seq: Partial<Sequence> & { id: string; name: str
     cues: [],
     ...seq,
   };
+}
+
+
+/**
+ * Clone the MotionDocuments referenced by `clips` so the resulting clips own
+ * independent documents. Used by sequence.duplicate / precomp.duplicate.
+ * Clips without a resolvable document pass through untouched.
+ */
+function withIndependentMotionDocs(
+  state: ProjectData,
+  clips: Clip[],
+  makeDocId: () => string
+): { motionDocuments: ProjectData['motionDocuments']; clips: Clip[] } {
+  const docs = { ...(state.motionDocuments ?? {}) };
+  let changed = false;
+  const out = clips.map((c) => {
+    const srcId = c.motionDocumentId ?? c.motionBundleId;
+    const src = srcId ? docs[srcId] : undefined;
+    if (!src || !srcId) return c;
+    const newId = makeDocId();
+    docs[newId] = {
+      ...cloneMotionDocument(src),
+      id: newId,
+      name: `${src.name} Copy`,
+      updatedAt: Date.now(),
+    };
+    changed = true;
+    return { ...c, motionDocumentId: newId, motionBundleId: newId };
+  });
+  return { motionDocuments: changed ? docs : (state.motionDocuments ?? {}), clips: out };
 }

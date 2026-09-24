@@ -769,6 +769,22 @@ export function createMotionDocument(
   };
 }
 
+// ── Cloning ──────────────────────────────────────────────────
+
+/**
+ * Deep-clone a MotionDocument. Used by every instantiation/duplication path
+ * (clip.duplicate, sequence.duplicate, precomp.duplicate, template placement)
+ * so no two clips ever share one mutable MotionDocument. MotionDocuments are
+ * plain JSON data — structuredClone with a JSON fallback is exact.
+ */
+export function cloneMotionDocument(doc: MotionDocument): MotionDocument {
+  try {
+    return structuredClone(doc);
+  } catch {
+    return JSON.parse(JSON.stringify(doc)) as MotionDocument;
+  }
+}
+
 // ── Keyframe evaluation ───────────────────────────────────────
 
 import { toSeconds } from './time';

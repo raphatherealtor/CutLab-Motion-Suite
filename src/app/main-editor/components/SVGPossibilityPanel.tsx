@@ -82,22 +82,25 @@ export default function SVGPossibilityPanel() {
     const fps = seq.format.fps;
     const playheadSecs = session.playheadFrame / fps;
 
-    // Store the canonical MotionDocument in project
+    // Store the canonical MotionDocument in project.
     // (SVG possibilities are authored in the legacy motion/types system —
     // migrate to the canonical engine MotionDocument at import time.)
-    const docId = possibility.motionDocument.id;
+    // EVERY placement gets a fresh document id: placing the same possibility
+    // twice must produce two independent, individually editable documents,
+    // never two clips aliased onto one shared entry.
     const engineDoc = motionTypesDocToEngineDoc(possibility.motionDocument as unknown as Parameters<typeof motionTypesDocToEngineDoc>[0]);
+    engineDoc.id = generateId('mdoc');
+    engineDoc.createdAt = Date.now();
+    engineDoc.updatedAt = Date.now();
+    const docId = engineDoc.id;
 
     // Create a motion clip on the timeline
     const clipId = generateId();
     const clipDuration = possibility.motionDocument.duration.value / possibility.motionDocument.duration.timescale;
 
-    engine.dispatch(
-      makeOp('motion.document.register', { document: engineDoc }),
-      `Import SVG: ${possibility.label}`
-    );
-
-    engine.dispatch(
+    // ONE atomic batch: register + clip.add land as a single history entry
+    engine.dispatchBatch([
+      makeOp('motion.document.register', { document: engineDoc }, 'system'),
       makeOp('clip.add', {
         sequenceId: seq.id,
         clip: {
@@ -121,10 +124,10 @@ export default function SVGPossibilityPanel() {
           freeze: false,
           disabled: false,
           motionDocumentId: docId,
+          motionBundleId: docId,
         },
       }),
-      `Place SVG: ${possibility.label}`
-    );
+    ], `Place SVG: ${possibility.label}`);
 
     setSelectedPossibility(possibility);
   }, [project, session, engine]);
