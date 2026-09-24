@@ -17,13 +17,12 @@
 
 import React, { useState, useCallback, useMemo } from 'react';
 import { useEngine } from '@/engine/store';
-import { getAllPackages, getPackagesByKind, searchPackages, getCapturedRecipes, captureRecipeFromOps, type MotionPackage, type MotionPackageKind, type CapturedRecipe,  } from '@/engine/motion-package';
+import { getAllPackages, getPackagesByKind, searchPackages, getCapturedRecipes, recipeToMotionOps, type MotionPackage, type MotionPackageKind } from '@/engine/motion-package';
 
 import { makeOp } from '@/engine/operations';
 import { motionTransactionToStudioOps } from '@/engine/motion-bridge';
 import { createMotionTransaction } from '@/engine/motion-document-utils';
 import { generateId } from '@/engine/schema';
-import { recipeToMotionOps } from '@/engine/motion-package';
 import type { ProjectRecipe } from '@/engine/schema';
 
 import type { WorkspaceHandoff } from '@/engine/workspace-context';
