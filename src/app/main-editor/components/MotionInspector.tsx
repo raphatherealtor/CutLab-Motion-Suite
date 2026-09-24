@@ -326,7 +326,10 @@ function PropertiesPanel({ doc, obj, onApplyOps }: PropertiesPanelProps) {
     setLocalText(obj.textSegments?.[0]?.text ?? '');
     setLocalFontSize(obj.textSegments?.[0]?.fontSize ?? 48);
     setLocalColor(objMaterial?.color ?? '#ffffff');
-  }, [obj.id]);
+    // Resync on object/material identity (not just id): the reducer rebuilds
+    // references every revision, so undo/redo on the SAME object refreshes
+    // these inputs instead of leaving pre-undo values in the fields.
+  }, [obj, objMaterial]);
 
   const commitTransform = (patch: Partial<MotionObject['transform']>) => {
     onApplyOps([makeMotionOp('motion.setObjectTransform', doc.id, { objectId: obj.id, transform: patch })], 'Set transform');

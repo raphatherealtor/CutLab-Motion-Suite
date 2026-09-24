@@ -202,7 +202,7 @@ function ContentSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; ob
   const [text, setText] = useState(seg?.text ?? '');
   const [targetMode, setTargetMode] = useState<'block' | 'phrase' | 'word'>('block');
 
-  useEffect(() => { setText(seg?.text ?? ''); }, [obj.id]);
+  useEffect(() => { setText(seg?.text ?? ''); }, [seg]);
 
   const commitText = (val: string) => {
     if (!seg) return;
@@ -296,7 +296,7 @@ function TypographySection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument;
     setLineHeight(obj.lineHeight ?? 1.2);
     setTextAlign(obj.textAlign ?? 'center');
     setFontFamily(seg?.fontFamily ?? obj.fontFamily ?? 'Inter');
-  }, [obj.id]);
+  }, [obj, seg]);
 
   const commitSeg = (patch: Partial<MotionTextSegment>) => {
     if (!seg) return;
@@ -783,7 +783,8 @@ function MaterialSection({ doc, obj, seg, onApplyOps }: { doc: MotionDocument; o
   useEffect(() => {
     setCustomColor(objMaterial?.color ?? '#ffffff');
     setOpacity((objMaterial?.opacity ?? 1) * 100);
-  }, [obj.id]);
+    // Resync on identity so undo/redo on the same object refreshes inputs.
+  }, [obj, objMaterial]);
 
   const applyMaterialPreset = (preset: typeof MATERIAL_PRESETS[0]) => {
     const material: MotionMaterial = {
@@ -930,7 +931,7 @@ function SpatialSection({ doc, obj, onApplyOps }: { doc: MotionDocument; obj: Mo
   const [parallaxAmt, setParallaxAmt] = useState(20);
   const [cameraResponse, setCameraResponse] = useState(0.5);
 
-  useEffect(() => { setDepth(obj.depth); setPosZ(obj.transform.z); }, [obj.id]);
+  useEffect(() => { setDepth(obj.depth); setPosZ(obj.transform.z); }, [obj]);
 
   const applySpatialPreset = (preset: typeof SPATIAL_PRESETS[0]) => {
     const ops: ReturnType<typeof makeMotionOp>[] = [
