@@ -36,7 +36,7 @@
       "serve",
       "type-check"
     ],
-    "warning": "🚨 CRITICAL: DO NOT REMOVE OR MODIFY ABOVE DEPENDENCIES - Required for Next.js 15 TypeScript app functionality"
+    "warning": "\ud83d\udea8 CRITICAL: DO NOT REMOVE OR MODIFY ABOVE DEPENDENCIES - Required for Next.js 15 TypeScript app functionality"
   },
   "scripts": {
     "dev": "next dev -p 4028",
@@ -46,7 +46,11 @@
     "lint:fix": "next lint --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,md,json}\"",
     "serve": "next start",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test:bridge": "tsx scripts/bridge-acceptance.ts",
+    "test:integration": "tsx scripts/chatz-integration-acceptance.ts",
+    "test:stress": "tsx scripts/runtime-stress.ts",
+    "test:e2e": "tsx scripts/run-e2e.ts"
   },
   "dependencies": {
     "@dhiwise/component-tagger": "^1.0.16",

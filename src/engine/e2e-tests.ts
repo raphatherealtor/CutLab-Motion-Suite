@@ -765,7 +765,11 @@ async function runMotionWorkflowTests(runner: TestRunner): Promise<void> {
     const transaction = createMotionTransaction('Update doc name', [motionOp]);
     const studioOps = motionTransactionToStudioOps(transaction, state);
     assert(studioOps.length > 0, 'motionTransactionToStudioOps produces ops');
-    assert(studioOps.some(o => o.type === 'motion.document.register'), 'includes motion.document.register');
+    // Canonical contract: edits to an existing doc are packed as ONE
+    // motion.document.patch op (the reducer is the only mutation door) —
+    // the converter never re-registers a document copy.
+    assert(studioOps.every(o => o.type === 'motion.document.patch'), 'includes only motion.document.patch ops');
+    assert(studioOps[0].payload.documentId === doc.id, 'patch targets the doc');
   });
 
   await runner.run('motion document update reflects in resolveMotionDocument', () => {
@@ -979,7 +983,19 @@ async function runSaveReloadRelinkTests(runner: TestRunner): Promise<void> {
     }));
     const json = serializeProject(state);
     const restored = deserializeProject(json);
-    assertEqual(restored.assets['asset-test-video'].caste, 'relinked', 'relinked caste survives serialization');
+    // Documented persistence design: runtimeUrl is never persisted, so on
+    // reopen the asset is honestly 'missing' until relinked — but its stable
+    // identity (the relinked sourceRef) must survive the round-trip.
+    assertEqual(
+      restored.assets['asset-test-video'].sourceRef,
+      'file://relinked.mp4',
+      'relinked sourceRef survives serialization'
+    );
+    assertEqual(
+      restored.assets['asset-test-video'].caste,
+      'missing',
+      'no-runtime-handle asset is honestly missing after reopen'
+    );
   });
 }
 

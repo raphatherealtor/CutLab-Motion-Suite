@@ -330,10 +330,17 @@ export function motionTypesDocToEngineDoc(legacy: LegacyMotionDocInput): MotionD
   const signals: MotionDocument['signals'] = {};
   for (const [sigId, rawSig] of Object.entries(legacy.signals ?? {})) {
     const rawRange = rawSig.range as { min?: unknown; max?: unknown } | undefined;
+    const rawDefault = rawSig.defaultValue as unknown;
     signals[sigId] = {
       id: (rawSig.id as string) ?? sigId,
       name: (rawSig.name as string) ?? sigId,
       type: 'number',
+      // Pass through an explicit static default when the source carries one;
+      // never fabricate one (fabricated 0 used to pin channel signals at 0).
+      defaultValue:
+        typeof rawDefault === 'number' || typeof rawDefault === 'boolean' || typeof rawDefault === 'string'
+          ? rawDefault
+          : undefined,
       expression: rawSig.expression as string | undefined,
       kind: rawSig.kind as string | undefined,
       sourceRef: rawSig.sourceRef as string | undefined,
