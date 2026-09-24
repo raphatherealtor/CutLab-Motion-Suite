@@ -60,6 +60,8 @@ export type OpType =
   | 'motion.document.register' | 'motion.document.patch' | 'motion.document.remove'
   /** @deprecated legacy alias for motion.document.register (accepted by reducer, compared by e2e) */
   | 'motionDocument.upsert'
+  // Library recipes — captured reusable Motion techniques (persisted)
+  | 'library.recipe.upsert' | 'library.recipe.remove'
   // Settings
   | 'settings.patch'
   // Session-only (never increment revision)
@@ -91,6 +93,7 @@ export type OpPayload =
   | VersionCreatePayload | VersionRestorePayload
   | MotionDocumentRegisterPayload | MotionDocumentPatchPayload | MotionDocumentRemovePayload
   | LegacyMotionDocumentUpsertPayload
+  | LibraryRecipeUpsertPayload | LibraryRecipeRemovePayload
   | SettingsPatchPayload
   | PlayheadSetPayload | SourceMonitorSetPayload;
 
@@ -193,6 +196,10 @@ export interface MotionDocumentRemovePayload { documentId: string }
 export interface LegacyMotionDocumentUpsertPayload {
   resource: { id: string; documentJson?: string; [key: string]: unknown };
 }
+
+// Library recipe payloads
+export interface LibraryRecipeUpsertPayload { recipe: import('./schema').ProjectRecipe }
+export interface LibraryRecipeRemovePayload { recipeId: string }
 
 // Settings payloads
 export interface SettingsPatchPayload { settings: Partial<import('./schema').ProjectSettings> }

@@ -109,8 +109,13 @@ export interface MotionPackage {
   dependencies: string[];
   /** Compatibility status */
   compatibilityStatus: 'compatible' | 'partial' | 'incompatible' | 'unknown';
-  /** The canonical Motion ops to apply when placing this package */
-  applyOps: (targetDocId: string, params: Record<string, unknown>) => MotionOp[];
+  /**
+   * The canonical Motion ops to apply when placing this package. When the
+   * target MotionDocument is provided, packages emit real content ops
+   * (signals, behaviors, materials, depth) bound to actual object ids;
+   * without a document only the metadata tag is emitted.
+   */
+  applyOps: (targetDocId: string, params: Record<string, unknown>, doc?: MotionDocument) => MotionOp[];
   /** Generate a preview MotionDocument for live preview */
   generatePreviewDoc?: (baseDoc: MotionDocument, params: Record<string, unknown>) => MotionDocument;
   createdAt: number;
@@ -516,23 +521,126 @@ const BUILTIN_PACKAGES: Omit<MotionPackage, 'applyOps' | 'generatePreviewDoc'>[]
   },
 ];
 
+// ── Real package content ops ─────────────────────────────────
+
+const DOC_NOW = () => Date.now();
+
+function systemOp(type: MotionOp['type'], documentId: string, payload: Record<string, unknown>): MotionOp {
+  return { opId: generateMotionId(), type, documentId, payload, actor: 'system', createdAt: DOC_NOW() };
+}
+
+function makeBehavior(type: string, params: Record<string, number | string | boolean>, durationRt: { value: number; timescale: number }, easing: string, signalBinding?: string) {
+  return {
+    id: generateMotionId(),
+    type: type as never,
+    startTime: { value: 0, timescale: 30000 },
+    duration: durationRt,
+    params,
+    signalBinding,
+    easing: easing as never,
+  };
+}
+
+/**
+ * Build REAL canonical ops for a package against its target document.
+ * Every op targets an existing object id, so a package application produces
+ * visible, editable Motion state — never just metadata.
+ */
+function buildPackageOps(
+  pkg: Pick<MotionPackage, 'id' | 'kind' | 'name' | 'accentColor' | 'capabilities'>,
+  params: Record<string, unknown>,
+  targetDocId: string,
+  doc?: MotionDocument
+): MotionOp[] {
+  const ops: MotionOp[] = [
+    // Compatibility tag (document-level provenance, kept for older saves)
+    systemOp('motion.setDocumentProp', targetDocId, { props: { [`package_${pkg.id}`]: JSON.stringify(params) } }),
+  ];
+  if (!doc) return ops;
+
+  const objects = doc.rootObjectIds.map((id) => doc.objects[id]).filter(Boolean);
+  const textObj = objects.find((o) => o.kind === 'text' || o.kind === 'text-segment');
+  const target = textObj ?? objects[0];
+  if (!target) return ops;
+
+  const duration = doc.duration;
+  const num = (key: string, fallback: number): number =>
+    typeof params[key] === 'number' ? (params[key] as number) : fallback;
+  const str = (key: string, fallback: string): string =>
+    typeof params[key] === 'string' ? (params[key] as string) : fallback;
+
+  // ── Signal-driven kits (binding-kit, signal treatments): upsert the
+  // channel signal (canonical kind) + bind a signal-reactive behavior.
+  for (const channel of pkg.capabilities.signalsRequired) {
+    const existing = Object.values(doc.signals).find((sg) => sg.kind === channel);
+    const sigId = existing?.id ?? generateMotionId();
+    if (!existing) {
+      ops.push(systemOp('motion.upsertSignal', targetDocId, {
+        signal: { id: sigId, name: channel, type: 'number', kind: channel, defaultValue: 0 },
+      }));
+    }
+    const maxScale = num('beatScale', num('emphasisScale', 1.15));
+    ops.push(systemOp('motion.addBehavior', targetDocId, {
+      objectId: target.id,
+      behavior: makeBehavior('signal-reactive', { property: 'scaleX', min: 0.9, max: maxScale }, duration, 'spring', sigId),
+    }));
+  }
+
+  // ── Depth/spatial kinds: distribute real depth across root objects.
+  if (pkg.kind === 'spatial-composition') {
+    const spread = num('depthSpread', num('corridorDepth', num('focusDepth', 0.5)));
+    objects.forEach((obj, i) => {
+      ops.push(systemOp('motion.setObjectProp', targetDocId, {
+        objectId: obj.id,
+        props: { depth: i * Math.max(0.2, spread * 4) },
+      }));
+    });
+  }
+
+  // ── Material treatments: build + assign a material from params.
+  if (pkg.kind === 'material-treatment' || pkg.kind === 'treatment' || pkg.kind === 'theme') {
+    const color = str('projectorColor', str('speaker1Color', pkg.accentColor));
+    const material = {
+      id: generateMotionId(),
+      name: `${pkg.name} Material`,
+      type: (pkg.kind === 'theme' ? 'gradient' : 'solid') as never,
+      color,
+      opacity: 1,
+    };
+    ops.push(systemOp('motion.material.assign', targetDocId, { objectId: target.id, material }));
+  }
+
+  // ── Choreography default: an entrance behavior when the package defines none.
+  if (pkg.capabilities.signalsRequired.length === 0 && pkg.kind !== 'camera-theme') {
+    ops.push(systemOp('motion.addBehavior', targetDocId, {
+      objectId: target.id,
+      behavior: makeBehavior('scale-in', { fromScale: 0.85 }, { value: 15000, timescale: 30000 }, 'ease-out'),
+    }));
+  }
+
+  // ── Camera themes: upsert + activate a camera.
+  if (pkg.kind === 'camera-theme') {
+    const camId = generateMotionId();
+    ops.push(systemOp('motion.camera.upsert', targetDocId, {
+      camera: {
+        id: camId, name: pkg.name,
+        transform: { x: 0, y: 0, z: -800, scaleX: 1, scaleY: 1, scaleZ: 1, rotationX: 0, rotationY: 0, rotationZ: 0, anchorX: 0, anchorY: 0, anchorZ: 0, opacity: 1 },
+        keyframes: [], fov: 60, near: 1, far: 10000, active: true,
+      },
+    }));
+    ops.push(systemOp('motion.camera.setActive', targetDocId, { cameraId: camId }));
+  }
+
+  return ops;
+}
+
 // Register all built-in packages
 for (const pkg of BUILTIN_PACKAGES) {
-  registerPackage({
+  const full: MotionPackage = {
     ...pkg,
-    applyOps: (targetDocId: string, params: Record<string, unknown>): MotionOp[] => {
-      // Return canonical ops for applying this package
-      // In production these would be fully specified; here we return a document-level tag op
-      return [{
-        opId: generateMotionId(),
-        type: 'motion.setDocumentProp',
-        documentId: targetDocId,
-        payload: { props: { [`package_${pkg.id}`]: JSON.stringify(params) } },
-        actor: 'system',
-        createdAt: Date.now(),
-      }];
-    },
-  });
+    applyOps: (targetDocId, params, doc) => buildPackageOps(pkg, params, targetDocId, doc),
+  };
+  registerPackage(full);
 }
 
 // ── Recipe Capture ────────────────────────────────────────────
@@ -572,6 +680,24 @@ export function captureRecipeFromOps(
 
 export function getCapturedRecipes(): CapturedRecipe[] {
   return [...capturedRecipes];
+}
+
+/**
+ * Remap a persisted recipe's canonical ops onto a target document.
+ * documentId is rewritten and op ids are regenerated so the same recipe can
+ * be applied to any MotionDocument (or twice to the same one) with correct
+ * independent identity.
+ */
+export function recipeToMotionOps(
+  recipe: import('./schema').ProjectRecipe,
+  targetDocId: string
+): MotionOp[] {
+  return recipe.ops.map((op) => ({
+    ...op,
+    opId: generateMotionId(),
+    documentId: targetDocId,
+    createdAt: Date.now(),
+  }));
 }
 
 // ── Variant System ────────────────────────────────────────────

@@ -387,6 +387,35 @@ export interface OpRecord {
   createdAt: number;
 }
 
+// ── Project Recipe (persisted reusable library content) ──────
+
+/**
+ * A captured, reusable technique: canonical MotionOps (documentId-neutral,
+ * remapped to a target document at apply time) plus the parameter schema the
+ * recipe was captured with. Persisted in ProjectData.recipes so captured
+ * library content survives save/reopen.
+ */
+export interface ProjectRecipeParam {
+  key: string;
+  label: string;
+  type: 'number' | 'string' | 'boolean' | 'color' | 'select' | 'range';
+  defaultValue: number | string | boolean;
+  min?: number;
+  max?: number;
+  options?: string[];
+}
+
+export interface ProjectRecipe {
+  id: string;
+  name: string;
+  description: string;
+  /** Canonical MotionOps; documentId is remapped to the target at apply time */
+  ops: import('./motion-document').MotionOp[];
+  params: ProjectRecipeParam[];
+  compatibleTargets: string[];
+  createdAt: number;
+}
+
 // ── ProjectData (the serializable canonical state) ────────────
 
 export interface ProjectData {
@@ -407,6 +436,8 @@ export interface ProjectData {
   exportPresets: Record<string, ExportPreset>;
   audioPresets: Record<string, AudioPreset>;
   settings: ProjectSettings;
+  /** Captured reusable library recipes (canonical ops, survive save/reopen) */
+  recipes?: ProjectRecipe[];
   /** Migration seam */
   migrations?: string[];
 }
@@ -548,6 +579,7 @@ export function createDefaultProject(name: string = 'Untitled Project'): Project
       snapEnabled: true,
       rippleEnabled: false,
     },
+    recipes: [],
     migrations: [],
   };
 }
@@ -568,6 +600,7 @@ export function migrateProject(data: Partial<ProjectData>): ProjectData {
     schemaVersion: SCHEMA_VERSION,
     precomps: data.precomps || {},
     motionDocuments: data.motionDocuments || {},
+    recipes: data.recipes || [],
     migrations: [...(data.migrations || []), `migrated-to-v${SCHEMA_VERSION}`],
   };
   // Ensure all sequences have transitions and cues arrays

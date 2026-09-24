@@ -63,6 +63,11 @@ export interface SessionState {
   sourceMonitorPlaying: boolean;
   /** Override active sequence (for entering precomps) — null = use project.activeSequenceId */
   activeSequenceOverride: string | null;
+  /**
+   * Most recent committed Motion ops (this session) — the source for library
+   * recipe capture. Session-only: never persisted, never increments revision.
+   */
+  lastMotionOps: import('./motion-document').MotionOp[];
 }
 
 export interface DragDraft {
@@ -120,6 +125,7 @@ const DEFAULT_SESSION: SessionState = {
   viewerOverlay: 'none',
   sourceMonitorPlaying: false,
   activeSequenceOverride: null,
+  lastMotionOps: [],
 };
 
 // ── Undo/Redo History ─────────────────────────────────────────

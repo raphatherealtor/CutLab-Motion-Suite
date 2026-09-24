@@ -23,6 +23,8 @@ import { makeOp } from '@/engine/operations';
 import { motionTransactionToStudioOps } from '@/engine/motion-bridge';
 import { createMotionTransaction } from '@/engine/motion-document-utils';
 import { generateId } from '@/engine/schema';
+import { recipeToMotionOps } from '@/engine/motion-package';
+import type { ProjectRecipe } from '@/engine/schema';
 
 import type { WorkspaceHandoff } from '@/engine/workspace-context';
 
@@ -76,7 +78,13 @@ export default function LibraryPackagePanel({
   const [captureMode, setCaptureMode] = useState(false);
   const [captureName, setCaptureName] = useState('');
   const [captureDesc, setCaptureDesc] = useState('');
-  const [capturedRecipes, setCapturedRecipes] = useState<CapturedRecipe[]>(() => getCapturedRecipes());
+  // Captured recipes are CANONICAL project state (ProjectData.recipes) — they
+  // survive save/reopen and undo/redo. The module-level recipe array in
+  // motion-package.ts is legacy display-only fallback.
+  const projectRecipes = project.recipes ?? [];
+  const recipes: ProjectRecipe[] = projectRecipes.length > 0
+    ? projectRecipes
+    : getCapturedRecipes().map((r) => ({ ...r, params: [], ops: [] }));
 
   // Get packages
   const allPackages = useMemo(() => {
@@ -111,22 +119,23 @@ export default function LibraryPackagePanel({
       return;
     }
 
-    // Default: apply to selected Motion clip or create new clip
+    // Default: apply to the handed-off MotionDocument. Without a real target
+    // the button is disabled in the UI — no silent no-ops.
     const seq = project.sequences[project.activeSequenceId];
     if (!seq) return;
 
-    const fps = seq.format.fps;
-    const playheadSecs = session.playheadFrame / fps;
+    const targetDocId = motionHandoff?.motionDocumentId;
+    const targetDoc = targetDocId ? project.motionDocuments?.[targetDocId] : undefined;
+    if (!targetDocId || !targetDoc) {
+      console.warn(`[cutlab] Cannot apply package "${selectedPackage.name}": no MotionDocument target`);
+      return;
+    }
 
-    // Get ops from package
-    const targetDocId = motionHandoff?.motionDocumentId ?? generateId();
-    const ops = selectedPackage.applyOps(targetDocId, packageParams);
+    // Real content ops: the package binds signals/behaviors/materials to
+    // actual objects in the target document.
+    const ops = selectedPackage.applyOps(targetDocId, packageParams, targetDoc);
 
     if (ops.length > 0) {
-      if (!project.motionDocuments?.[targetDocId]) {
-        console.warn(`[cutlab] Cannot apply package "${selectedPackage.name}": MotionDocument ${targetDocId} not found in project`);
-        return;
-      }
       // Canonical path: package MotionOps → MotionTransaction → Studio batch (one history entry)
       const tx = createMotionTransaction(`Apply package: ${selectedPackage.name}`, ops);
       const studioOps = motionTransactionToStudioOps(tx, project);
@@ -136,16 +145,55 @@ export default function LibraryPackagePanel({
     }
   }, [selectedPackage, packageParams, onApplyPackage, project, session, motionHandoff, engine]);
 
+  const hasValidPackageTarget = Boolean(
+    onApplyPackage || (motionHandoff?.motionDocumentId && project.motionDocuments?.[motionHandoff.motionDocumentId])
+  );
+
+  // ── Recipe capture: persist the session's last committed Motion ops as
+  // canonical project state via the library.recipe.upsert op.
   const handleCaptureRecipe = useCallback(() => {
     if (!captureName.trim()) return;
-    // In a real implementation, this would capture the recent operation history
-    // For now we create a placeholder recipe
-    const recipe = captureRecipeFromOps([], captureName, captureDesc);
-    setCapturedRecipes(getCapturedRecipes());
+    const sourceOps = session.lastMotionOps ?? [];
+    if (sourceOps.length === 0) return;
+    const recipe: ProjectRecipe = {
+      id: generateId('recipe'),
+      name: captureName.trim(),
+      description: captureDesc.trim(),
+      ops: sourceOps,
+      params: [],
+      compatibleTargets: ['any'],
+      createdAt: Date.now(),
+    };
+    engine.dispatch(
+      makeOp('library.recipe.upsert', { recipe }),
+      `Capture recipe: ${recipe.name}`
+    );
     setCaptureName('');
     setCaptureDesc('');
     setCaptureMode(false);
-  }, [captureName, captureDesc]);
+  }, [captureName, captureDesc, session.lastMotionOps, engine]);
+
+  // ── Recipe apply: remap the recipe's ops onto the target document and
+  // dispatch through the canonical transaction path (independent identity —
+  // the recipe's stored documentIds are never referenced).
+  const handleApplyRecipe = useCallback((recipe: ProjectRecipe) => {
+    const seq = project.sequences[project.activeSequenceId];
+    if (!seq) return;
+    const targetDocId = motionHandoff?.motionDocumentId;
+    const targetDoc = targetDocId ? project.motionDocuments?.[targetDocId] : undefined;
+    if (!targetDocId || !targetDoc) return;
+    const ops = recipeToMotionOps(recipe, targetDocId);
+    if (ops.length === 0) return;
+    const tx = createMotionTransaction(`Apply recipe: ${recipe.name}`, ops);
+    const studioOps = motionTransactionToStudioOps(tx, project);
+    if (studioOps.length > 0) {
+      engine.dispatchBatch(studioOps, `Apply recipe: ${recipe.name}`);
+    }
+  }, [project, motionHandoff, engine]);
+
+  const handleDeleteRecipe = useCallback((recipeId: string) => {
+    engine.dispatch(makeOp('library.recipe.remove', { recipeId }), 'Delete recipe');
+  }, [engine]);
 
   const kindOptions: Array<MotionPackageKind | 'all' | 'captured'> = [
     'all', 'treatment', 'spatial-composition', 'text-composition', 'binding-kit',
@@ -412,7 +460,9 @@ export default function LibraryPackagePanel({
             <div style={{ display: 'flex', gap: '6px' }}>
               <button
                 onClick={handleApplyPackage}
-                style={{ flex: 1, padding: '8px', background: `${selectedPackage.accentColor}20`, border: `1px solid ${selectedPackage.accentColor}40`, borderRadius: '5px', color: selectedPackage.accentColor, fontSize: '11px', cursor: 'pointer', fontWeight: 600 }}
+                disabled={!hasValidPackageTarget}
+                title={hasValidPackageTarget ? undefined : 'Open a Motion clip in Motion Animator to apply packages'}
+                style={{ flex: 1, padding: '8px', background: `${selectedPackage.accentColor}20`, border: `1px solid ${selectedPackage.accentColor}40`, borderRadius: '5px', color: selectedPackage.accentColor, fontSize: '11px', cursor: hasValidPackageTarget ? 'pointer' : 'not-allowed', opacity: hasValidPackageTarget ? 1 : 0.4, fontWeight: 600 }}
               >
                 {workspaceKind === 'motion-animator' ? 'APPLY TO DOCUMENT' : 'PLACE ON TIMELINE'}
               </button>
@@ -431,6 +481,12 @@ export default function LibraryPackagePanel({
           <div style={{ padding: '12px' }}>
             <div style={{ fontSize: '10px', color: 'var(--color-muted)', marginBottom: '10px', lineHeight: 1.5 }}>
               Capture reusable techniques from your operation history. Recipes reference canonical capability parameters, not baked pixels.
+            </div>
+
+            <div style={{ fontSize: '9px', color: 'var(--color-muted)', marginBottom: '8px' }}>
+              {session.lastMotionOps.length > 0
+                ? `${session.lastMotionOps.length} motion op(s) ready to capture from this session`
+                : 'Perform Motion edits first — capture records your last committed ops'}
             </div>
 
             {/* Capture form */}
@@ -452,8 +508,9 @@ export default function LibraryPackagePanel({
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <button
                     onClick={handleCaptureRecipe}
-                    disabled={!captureName.trim()}
-                    style={{ flex: 1, padding: '6px', background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '4px', color: '#10b981', fontSize: '10px', cursor: 'pointer' }}
+                    disabled={!captureName.trim() || (session.lastMotionOps ?? []).length === 0}
+                    title={(session.lastMotionOps ?? []).length === 0 ? 'No recent Motion ops to capture' : 'Capture last committed Motion ops'}
+                    style={{ flex: 1, padding: '6px', background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '4px', color: '#10b981', fontSize: '10px', cursor: (session.lastMotionOps ?? []).length > 0 ? 'pointer' : 'not-allowed', opacity: (session.lastMotionOps ?? []).length > 0 ? 1 : 0.4 }}
                   >
                     CAPTURE
                   </button>
@@ -474,16 +531,35 @@ export default function LibraryPackagePanel({
               </button>
             )}
 
-            {capturedRecipes.length === 0 ? (
+            {recipes.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '20px', fontSize: '11px', color: 'var(--color-muted)' }}>
-                No captured recipes yet. Perform operations and capture them as reusable recipes.
+                No captured recipes yet. Perform Motion edits, then capture them as reusable recipes (saved with the project).
               </div>
             ) : (
-              capturedRecipes.map((recipe) => (
+              recipes.map((recipe) => (
                 <div key={recipe.id} style={{ marginBottom: '8px', padding: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
                   <div style={{ fontSize: '11px', color: 'var(--color-fg)', fontWeight: 600, marginBottom: '3px' }}>{recipe.name}</div>
-                  <div style={{ fontSize: '10px', color: 'var(--color-muted)', marginBottom: '6px' }}>{recipe.description}</div>
-                  <div style={{ fontSize: '9px', color: 'var(--color-muted)' }}>{recipe.ops.length} ops · {recipe.compatibleTargets.join(', ')}</div>
+                  <div style={{ fontSize: '10px', color: 'var(--color-muted)', marginBottom: '6px' }}>{recipe.description || 'Captured Motion technique'}</div>
+                  <div style={{ fontSize: '9px', color: 'var(--color-muted)', marginBottom: '8px' }}>{recipe.ops.length} ops · {recipe.compatibleTargets.join(', ')}</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => handleApplyRecipe(recipe)}
+                      disabled={!hasValidPackageTarget}
+                      title={hasValidPackageTarget ? 'Apply recipe to the current MotionDocument' : 'Open a Motion clip first'}
+                      style={{ flex: 1, padding: '5px', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '4px', color: '#f59e0b', fontSize: '10px', cursor: hasValidPackageTarget ? 'pointer' : 'not-allowed', opacity: hasValidPackageTarget ? 1 : 0.4 }}
+                    >
+                      APPLY TO DOCUMENT
+                    </button>
+                    {(projectRecipes.length > 0) && (
+                      <button
+                        onClick={() => handleDeleteRecipe(recipe.id)}
+                        title="Delete recipe"
+                        style={{ padding: '5px 9px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '4px', color: '#ef4444', fontSize: '10px', cursor: 'pointer' }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))
             )}

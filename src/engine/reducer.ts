@@ -852,6 +852,18 @@ function reduce(state: ProjectData, env: OpEnvelope): ProjectData {
       return state;
     }
 
+    // ── Library recipes ──────────────────────────────────────
+    case 'library.recipe.upsert': {
+      const { recipe } = env.payload as import('./operations').LibraryRecipeUpsertPayload;
+      if (!recipe?.id) return state;
+      const existing = (state.recipes ?? []).filter((r) => r.id !== recipe.id);
+      return { ...state, recipes: [...existing, recipe] };
+    }
+    case 'library.recipe.remove': {
+      const { recipeId } = env.payload as import('./operations').LibraryRecipeRemovePayload;
+      return { ...state, recipes: (state.recipes ?? []).filter((r) => r.id !== recipeId) };
+    }
+
     // ── Settings ─────────────────────────────────────────────
     case 'settings.patch': {
       return { ...state, settings: { ...state.settings, ...p.settings } };

@@ -1176,9 +1176,11 @@ export default function MotionAnimatorWorkspace({
       if (studioOps.length > 0) {
         dispatchBatch(studioOps, description);
         setHadEdits(true);
+        // Session-only provenance for library recipe capture (never persisted).
+        engine.updateSession({ lastMotionOps: [...ops] });
       }
     },
-    [project, doc, dispatchBatch]
+    [project, doc, dispatchBatch, engine]
   );
 
   // Selection handlers — ONE selection model
